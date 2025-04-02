@@ -4,7 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:logger/logger.dart';
 import 'sign_in_screen.dart';
 import '../widgets/app_logo.dart';
-import '../widgets/curved_background.dart'; // Ensure this file exists
+import '../widgets/curved_background.dart';
 
 class ResetPasswordScreen extends StatefulWidget {
   final String email;
@@ -185,7 +185,19 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
                             return null;
                           },
                         ),
-                        const SizedBox(height: 32),
+                        const SizedBox(height: 16),
+                        if (_errorMessage != null)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: Text(
+                              _errorMessage!,
+                              style: const TextStyle(
+                                color: Colors.red,
+                                fontSize: 14,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
                         ElevatedButton(
                           onPressed: _isLoading ? null : _resetPassword,
                           child: _isLoading
