@@ -4,7 +4,7 @@ import 'dashboard_screen.dart';
 import 'forgot_password_screen.dart';
 import '../widgets/app_logo.dart';
 import '../widgets/social_login_buttons.dart';
-import '../widgets/curved_background.dart'; // Import the reusable background
+import '../widgets/curved_background.dart'; 
 import 'package:http/http.dart' as http;
 import 'package:logger/logger.dart';
 
@@ -117,7 +117,7 @@ class _SignInScreenState extends State<SignInScreen> {
                             if (value == null || value.isEmpty) {
                               return 'Please enter your email';
                             }
-                            if (!RegExp(r'^[\w-]+@([\w-]+\.)+[\w-]{2,4}\$').hasMatch(value)) {
+                            if (!RegExp(r'^[\w-]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(value)) {
                               return 'Please enter a valid email';
                             }
                             return null;
