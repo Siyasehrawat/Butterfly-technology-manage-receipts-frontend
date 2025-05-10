@@ -57,7 +57,7 @@ class ReceiptItem extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      receipt['store'] ?? 'Unknown Merchant',
+                      receipt['merchant'] ?? 'Unknown Merchant',
                       style: const TextStyle(
                         fontWeight: FontWeight.bold,
                         fontSize: 16,
@@ -85,7 +85,7 @@ class ReceiptItem extends StatelessWidget {
                     ),
                   ),
                   Text(
-                    receipt['date'] ?? 'No date',
+                    receipt['receiptDate'] ?? 'No date',
                     style: const TextStyle(
                       fontSize: 12,
                       color: Colors.grey,

@@ -33,7 +33,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final userProvider = Provider.of<UserProvider>(context, listen: false);
+    final userProvider = Provider.of<UserProvider>(context);
 
     return Scaffold(
       body: Column(
@@ -267,7 +267,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               color: Colors.white,
                               borderRadius: BorderRadius.circular(8),
                               border:
-                                  Border.all(color: const Color(0xFF7E5EFD)),
+                              Border.all(color: const Color(0xFF7E5EFD)),
                             ),
                             child: const Text(
                               'Light Mode',
@@ -317,7 +317,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               color: Colors.white,
                               borderRadius: BorderRadius.circular(8),
                               border:
-                                  Border.all(color: const Color(0xFF7E5EFD)),
+                              Border.all(color: const Color(0xFF7E5EFD)),
                             ),
                             child: const Text(
                               'US Dollar (\$)',
@@ -391,7 +391,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     try {
                                       final response = await http.post(
                                         Uri.parse(
-                                            'https://manage-receipt-backend-bnl1.onrender.com/api/users/delete-account'),
+                                            'http://192.168.1.7:3000/api/users/delete-account'),
                                         headers: {
                                           'Content-Type': 'application/json',
                                           'Authorization': 'Bearer $token',
@@ -401,22 +401,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                                       if (response.statusCode == 200) {
                                         // Show success message
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
+                                        ScaffoldMessenger.of(context).showSnackBar(
                                           const SnackBar(
-                                            content: Text(
-                                                'Account deleted successfully.'),
+                                            content: Text('Account deleted successfully.'),
                                             backgroundColor: Colors.green,
                                           ),
                                         );
 
+                                        // Clear user state before navigating
+                                        await userProvider.logout();
+
                                         // Navigate to WelcomeScreen and clear navigation stack
                                         Navigator.pushAndRemoveUntil(
                                           context,
-                                          MaterialPageRoute(
-                                              builder: (context) =>
-                                                  const WelcomeScreen()),
-                                          (route) => false,
+                                          MaterialPageRoute(builder: (context) => const WelcomeScreen()),
+                                              (route) => false,
                                         );
                                       } else if (response.statusCode == 404) {
                                         // Handle user not found

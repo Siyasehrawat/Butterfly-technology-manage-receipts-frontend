@@ -163,6 +163,10 @@ class AuthService {
         final responseData = json.decode(response.body);
         final token = responseData['token'];
 
+        // Check if user has admin access
+        final List<dynamic> screens = responseData['screens'] ?? [];
+        final bool hasAdminAccess = screens.contains('AdminPanel');
+
         if (token != null) {
           // Decode the token to extract the userId
           final parts = token.split('.');
@@ -180,12 +184,14 @@ class AuthService {
                 token: token,
                 userId: userId,
                 email: email,
+                hasAdminAccess: hasAdminAccess, // Store admin access status
               );
 
               return {
                 'success': true,
                 'userId': userId,
                 'token': token,
+                'hasAdminAccess': hasAdminAccess,
                 'message': 'Login successful'
               };
             } else {
@@ -323,6 +329,11 @@ class AuthService {
   // Check if user is logged in
   Future<bool> isLoggedIn() async {
     return await _authManager.isLoggedIn();
+  }
+
+  // Check if user has admin access
+  Future<bool> hasAdminAccess() async {
+    return await _authManager.hasAdminAccess();
   }
 
   // Placeholder methods for social login (to avoid breaking existing code)

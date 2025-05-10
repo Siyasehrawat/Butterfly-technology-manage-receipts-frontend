@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../screens/dashboard_screen.dart';
 import '../screens/profile_screen.dart';
 import '../screens/reports_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/welcome_screen.dart';
+import '../screens/admin_dashboard_screen.dart';
 import '../services/auth_service.dart';
 import '../services/auth_manager.dart';
-import 'package:provider/provider.dart';
 import '../providers/user_provider.dart';
 import 'app_logo.dart';
 
@@ -24,6 +25,9 @@ class AppDrawer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final userProvider = Provider.of<UserProvider>(context);
+    final bool hasAdminAccess = userProvider.hasAdminAccess;
+
     return Drawer(
       child: Container(
         color: const Color(0xFF7E5EFD),
@@ -102,6 +106,28 @@ class AppDrawer extends StatelessWidget {
 
             // Divider after Reports
             _buildDivider(),
+
+            // Admin Panel (only shown if user has admin access)
+            if (hasAdminAccess) ...[
+              _buildDrawerItem(
+                context,
+                icon: Icons.admin_panel_settings,
+                title: 'Admin Panel',
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => AdminDashboardScreen(
+                        adminId: userId,
+                        token: token,
+                      ),
+                    ),
+                  );
+                },
+              ),
+              _buildDivider(),
+            ],
 
             // Settings
             _buildDrawerItem(

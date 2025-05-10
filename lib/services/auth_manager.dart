@@ -24,7 +24,6 @@ class AuthManager {
     String? email,
     String? name,
   }) async {
-    // Store in secure storage
     await _storage.write(key: _tokenKey, value: token);
     await _storage.write(key: _userIdKey, value: userId);
 
@@ -35,89 +34,33 @@ class AuthManager {
     if (name != null) {
       await _storage.write(key: _userNameKey, value: name);
     }
-
-    // Also store in SharedPreferences for faster access
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('token', token);
-    await prefs.setString('userId', userId);
-    if (email != null) await prefs.setString('email', email);
-    if (name != null) await prefs.setString('name', name);
   }
 
   // Get the stored token
   Future<String?> getToken() async {
-    try {
-      // Try to get from secure storage first
-      String? token = await _storage.read(key: _tokenKey);
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('token');
+  }
 
-      // If not found, try SharedPreferences
-      if (token == null) {
-        final prefs = await SharedPreferences.getInstance();
-        token = prefs.getString('token');
-
-        // If found in SharedPreferences but not in secure storage, restore it
-        if (token != null) {
-          await _storage.write(key: _tokenKey, value: token);
-        }
-      }
-
-      return token;
-    } catch (e) {
-      // Fallback to SharedPreferences if secure storage fails
-      final prefs = await SharedPreferences.getInstance();
-      return prefs.getString('token');
-    }
+  // Save the token
+  Future<void> saveToken(String token) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('token', token);
   }
 
   // Get the stored user ID
   Future<String?> getUserId() async {
-    try {
-      String? userId = await _storage.read(key: _userIdKey);
-
-      if (userId == null) {
-        final prefs = await SharedPreferences.getInstance();
-        userId = prefs.getString('userId');
-      }
-
-      return userId;
-    } catch (e) {
-      final prefs = await SharedPreferences.getInstance();
-      return prefs.getString('userId');
-    }
+    return await _storage.read(key: _userIdKey);
   }
 
   // Get the stored email
   Future<String?> getUserEmail() async {
-    try {
-      String? email = await _storage.read(key: _userEmailKey);
-
-      if (email == null) {
-        final prefs = await SharedPreferences.getInstance();
-        email = prefs.getString('email');
-      }
-
-      return email;
-    } catch (e) {
-      final prefs = await SharedPreferences.getInstance();
-      return prefs.getString('email');
-    }
+    return await _storage.read(key: _userEmailKey);
   }
 
   // Get the stored name
   Future<String?> getUserName() async {
-    try {
-      String? name = await _storage.read(key: _userNameKey);
-
-      if (name == null) {
-        final prefs = await SharedPreferences.getInstance();
-        name = prefs.getString('name');
-      }
-
-      return name;
-    } catch (e) {
-      final prefs = await SharedPreferences.getInstance();
-      return prefs.getString('name');
-    }
+    return await _storage.read(key: _userNameKey);
   }
 
   // Check if user is logged in
@@ -147,17 +90,6 @@ class AuthManager {
 
   // Clear authentication data (logout)
   Future<void> clearAuthData() async {
-    try {
-      // Clear secure storage
-      await _storage.delete(key: _tokenKey);
-      await _storage.delete(key: _userIdKey);
-      await _storage.delete(key: _userEmailKey);
-      await _storage.delete(key: _userNameKey);
-    } catch (e) {
-      // Ignore errors when clearing secure storage
-    }
-
-    // Also clear SharedPreferences
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
   }

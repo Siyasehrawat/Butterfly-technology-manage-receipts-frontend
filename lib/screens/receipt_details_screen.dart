@@ -1,11 +1,12 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:provider/provider.dart';
-// Removed unused import for receipt_provider.dart
 import '../providers/setting_provider.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'full_image_view_screen.dart';
 
 class ReceiptDetailsScreen extends StatefulWidget {
   final Map<String, dynamic> receipt;
@@ -28,20 +29,15 @@ class ReceiptDetailsScreen extends StatefulWidget {
 }
 
 class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
-  bool _isLoadingCategories = true;
   bool _isDeleting = false;
   bool _isSaving = false;
-  List<Map<String, dynamic>> _categories = [];
-  int? _selectedCategoryId;
-  String _selectedCategoryName = 'Uncategorized';
 
   // Text editing controllers for inline editing
   late TextEditingController _merchantController;
   late TextEditingController _dateController;
   final TextEditingController _timeController = TextEditingController();
   late TextEditingController _amountController;
-  final TextEditingController _categoryController = TextEditingController();
-  TextEditingController _customCategoryController = TextEditingController();
+  late TextEditingController _categoryController;
 
   // Editing state flags
   bool _editingMerchant = false;
@@ -78,14 +74,11 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
     _amountController = TextEditingController(
       text: widget.receipt['amount']?.toString() ?? '0.00',
     );
-    _customCategoryController = TextEditingController();
 
-    // Initialize category controller
-    _categoryController.text = widget.receipt['category'] ?? 'Uncategorized';
-    _selectedCategoryName = _categoryController.text;
-
-    // Fetch categories
-    fetchCategories();
+    // Initialize category controller with the category from the receipt
+    _categoryController = TextEditingController(
+      text: widget.receipt['category'] ?? 'Uncategorized',
+    );
   }
 
   @override
@@ -95,93 +88,7 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
     _timeController.dispose();
     _amountController.dispose();
     _categoryController.dispose();
-    _customCategoryController.dispose();
     super.dispose();
-  }
-
-  Future<void> fetchCategories() async {
-    final url = Uri.parse(
-      'https://manage-receipt-backend-bnl1.onrender.com/api/categories/get-all-categories',
-    );
-
-    try {
-      final response = await http.get(url);
-
-      if (response.statusCode == 200) {
-        List<dynamic> categoryList = json.decode(response.body);
-        List<Map<String, dynamic>> fetchedCategories =
-        List<Map<String, dynamic>>.from(categoryList);
-
-        setState(() {
-          _categories = fetchedCategories;
-
-          // Find the selected category based on categoryId or name
-          if (widget.receipt['categoryId'] != null) {
-            // If we have a categoryId, find the category by ID
-            final categoryId =
-                int.tryParse(widget.receipt['categoryId'].toString()) ?? 0;
-            final matchingCategories = _categories
-                .where((cat) => cat['categoryId'] == categoryId)
-                .toList();
-
-            if (matchingCategories.isNotEmpty) {
-              _selectedCategoryId = categoryId;
-              _selectedCategoryName = matchingCategories.first['name'];
-              _categoryController.text = _selectedCategoryName;
-            } else {
-              // Default to "Other" if no match found
-              _selectedCategoryId = 0;
-              _selectedCategoryName = 'Other';
-              _categoryController.text = 'Other';
-            }
-          } else {
-            // Otherwise try to find by name
-            final initialCategoryName =
-                widget.receipt['category']?.toString() ?? '';
-            final matchingCategories = _categories
-                .where((cat) =>
-            cat['name'].toString().toLowerCase() ==
-                initialCategoryName.toLowerCase())
-                .toList();
-
-            if (matchingCategories.isNotEmpty) {
-              _selectedCategoryId = matchingCategories.first['categoryId'];
-              _selectedCategoryName = matchingCategories.first['name'];
-              _categoryController.text = _selectedCategoryName;
-            } else {
-              // Default to "Other" if no match found
-              _selectedCategoryId = 0;
-              _selectedCategoryName = 'Other';
-              _categoryController.text = 'Other';
-            }
-          }
-
-          _isLoadingCategories = false;
-        });
-      } else {
-        throw Exception('Failed to load categories');
-      }
-    } catch (e) {
-      debugPrint('Error fetching categories: $e');
-      setState(() {
-        // Default categories if API fails
-        _categories = [
-          {'categoryId': 1, 'name': 'Meal'},
-          {'categoryId': 2, 'name': 'Education'},
-          {'categoryId': 3, 'name': 'Medical'},
-          {'categoryId': 4, 'name': 'Shopping'},
-          {'categoryId': 5, 'name': 'Travel'},
-          {'categoryId': 6, 'name': 'Rent'},
-          {'categoryId': 0, 'name': 'Other'},
-        ];
-
-        // Set default selected category
-        _selectedCategoryId = 0;
-        _selectedCategoryName = 'Other';
-        _categoryController.text = 'Other';
-        _isLoadingCategories = false;
-      });
-    }
   }
 
   String? _formatDate(String date) {
@@ -214,11 +121,6 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
       _isSaving = true;
     });
 
-    // Get the categoryId from the selected category
-    final customCategory = _selectedCategoryName == 'Other'
-        ? _customCategoryController.text.trim()
-        : null;
-
     // Format the date
     final rawDate = _dateController.text.trim();
     final formattedDate = _formatDate(rawDate);
@@ -235,16 +137,13 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
       });
       return;
     }
-
     // Prepare receipt data
     final receiptData = {
       'userId': widget.userId,
       'merchant': _merchantController.text.trim(),
       'receiptDate': formattedDate, // Use the correctly formatted date
       'amount': _amountController.text.trim().replaceAll(RegExp(r'[^\d.]'), ''),
-      'categoryId': _selectedCategoryId,
-      'category': _selectedCategoryName, // Include both categoryId and name
-      'customCategory': customCategory,
+      'category': _categoryController.text.trim(), // Use the category directly
       'imageUrl': widget.imageUrl,
       'imageId': widget.imageId,
     };
@@ -406,20 +305,7 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => Scaffold(
-          appBar: AppBar(
-            title: const Text('Receipt Image'),
-            backgroundColor: const Color(0xFF7E5EFD),
-          ),
-          body: PhotoView(
-            imageProvider: NetworkImage(widget.imageUrl),
-            minScale: PhotoViewComputedScale.contained,
-            maxScale: PhotoViewComputedScale.covered * 2,
-            backgroundDecoration: const BoxDecoration(
-              color: Colors.black,
-            ),
-          ),
-        ),
+        builder: (_) => FullImageViewScreen(imageUrl: widget.imageUrl),
       ),
     );
   }
@@ -462,10 +348,7 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
         return true;
       },
       child: Scaffold(
-        body: _isLoadingCategories
-            ? const Center(
-            child: CircularProgressIndicator(color: Color(0xFF7E5EFD)))
-            : _isDeleting
+        body: _isDeleting
             ? const Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -491,311 +374,304 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
     final settingsProvider = Provider.of<SettingsProvider>(context);
     final currencySymbol = settingsProvider.currencySymbol;
 
-    return Column(
-      children: [
-        // Purple header with logo
-        Container(
-          color: const Color(0xFF7E5EFD),
-          padding: const EdgeInsets.only(top: 40, bottom: 16),
-          child: Row(
-            children: [
-              IconButton(
-                icon: const Icon(Icons.arrow_back, color: Colors.white),
-                onPressed: () {
-                  // If this is a new receipt, show confirmation dialog
-                  if (_isNewReceipt) {
-                    showDialog(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        title: const Text('Discard Receipt?'),
-                        content: const Text(
-                          'This receipt has not been saved. Are you sure you want to discard it?',
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(context),
-                            child: const Text('Cancel'),
+    return SafeArea(
+      bottom: true, // Ensure bottom padding for system navigation bar
+      child: Column(
+        children: [
+          // Purple header with logo
+          Container(
+            color: const Color(0xFF7E5EFD),
+            padding: const EdgeInsets.only(top: 8, bottom: 16),
+            child: Row(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.arrow_back, color: Colors.white),
+                  onPressed: () {
+                    // If this is a new receipt, show confirmation dialog
+                    if (_isNewReceipt) {
+                      showDialog(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: const Text('Discard Receipt?'),
+                          content: const Text(
+                            'This receipt has not been saved. Are you sure you want to discard it?',
                           ),
-                          TextButton(
-                            onPressed: () {
-                              Navigator.pop(context); // Close dialog
-                              Navigator.pop(context,
-                                  false); // Return to previous screen with false
-                            },
-                            child: const Text('Discard',
-                                style: TextStyle(color: Colors.red)),
-                          ),
-                        ],
-                      ),
-                    );
-                  } else {
-                    // For existing receipts, just go back
-                    Navigator.pop(context);
-                  }
-                },
-              ),
-              const Expanded(
-                child: Center(
-                  child: Text(
-                    '',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ),
-              Container(
-                margin: const EdgeInsets.only(right: 16),
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Center(
-                  child: Image.asset(
-                    'assets/logo.png',
-                    width: 30,
-                    height: 30,
-                    errorBuilder: (context, error, stackTrace) {
-                      return const Text(
-                        'MR',
-                        style: TextStyle(
-                          color: Color(0xFF7E5EFD),
-                          fontWeight: FontWeight.bold,
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('Cancel'),
+                            ),
+                            TextButton(
+                              onPressed: () {
+                                Navigator.pop(context); // Close dialog
+                                Navigator.pop(context,
+                                    false); // Return to previous screen with false
+                              },
+                              child: const Text('Discard',
+                                  style: TextStyle(color: Colors.red)),
+                            ),
+                          ],
                         ),
                       );
-                    },
+                    } else {
+                      // For existing receipts, just go back
+                      Navigator.pop(context);
+                    }
+                  },
+                ),
+                const Expanded(
+                  child: Center(
+                    child: Text(
+                      '',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ],
-          ),
-        ),
-
-        // Content area
-        Expanded(
-          child: SingleChildScrollView(
-            child: Column(
-              children: [
-                // Receipt image with zoom button
-                Stack(
-                  children: [
-                    GestureDetector(
-                      onTap: () => _openZoom(context), // Allow zooming on tap
-                      child: Image.network(
-                        widget
-                            .imageUrl, // Use the imageUrl passed from the backend
-                        width: double.infinity,
-                        height: 300,
-                        fit: BoxFit.cover,
-                        errorBuilder: (context, error, stackTrace) => Container(
-                          height: 300,
-                          color: Colors.grey[300],
-                          child: const Center(
-                            child: Icon(Icons.broken_image,
-                                size: 50, color: Colors.grey),
+                Container(
+                  margin: const EdgeInsets.only(right: 16),
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Center(
+                    child: Image.asset(
+                      'assets/logo.png',
+                      width: 30,
+                      height: 30,
+                      errorBuilder: (context, error, stackTrace) {
+                        return const Text(
+                          'MR',
+                          style: TextStyle(
+                            color: Color(0xFF7E5EFD),
+                            fontWeight: FontWeight.bold,
                           ),
-                        ),
-                      ),
+                        );
+                      },
                     ),
-                    Positioned(
-                      right: 10,
-                      bottom: 10,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.5),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: IconButton(
-                          icon: const Icon(Icons.zoom_out_map,
-                              color: Colors.white),
-                          onPressed: () => _openZoom(context), // Open zoom view
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-
-                // Receipt details section
-                Padding(
-                  padding: const EdgeInsets.all(20.0),
-                  child: Column(
-                    children: [
-                      const Text(
-                        'Receipt Details',
-                        style: TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        'All receipt information in one organized view.',
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: Colors.grey,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 20),
-
-                      // Editable fields container
-                      Container(
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE8E6FF),
-                          borderRadius: BorderRadius.circular(16),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.05),
-                              blurRadius: 10,
-                              offset: const Offset(0, 5),
-                            ),
-                          ],
-                        ),
-                        padding: const EdgeInsets.all(20),
-                        child: Column(
-                          children: [
-                            // Merchant field
-                            _buildEditableField(
-                              'Merchant',
-                              _merchantController,
-                              _editingMerchant,
-                                  () => setState(
-                                      () => _editingMerchant = !_editingMerchant),
-                            ),
-
-                            // Date field
-                            _buildEditableField(
-                              'Date',
-                              _dateController,
-                              _editingDate,
-                                  () =>
-                                  setState(() => _editingDate = !_editingDate),
-                            ),
-
-                            // Amount field
-                            _buildEditableField(
-                              'Amount',
-                              _amountController,
-                              _editingAmount,
-                                  () => setState(
-                                      () => _editingAmount = !_editingAmount),
-                              prefix: _editingAmount ? currencySymbol : null,
-                              keyboardType: TextInputType.number,
-                              formatText: (text) => '$currencySymbol$text',
-                            ),
-
-                            // Category field
-                            _buildEditableField(
-                              'Category',
-                              _categoryController,
-                              _editingCategory,
-                                  () => setState(
-                                      () => _editingCategory = !_editingCategory),
-                              onTap:
-                              _editingCategory ? _showCategoryPicker : null,
-                            ),
-
-                            // Custom category field (only shown when "Other" is selected)
-                            if (_selectedCategoryName == 'Other') ...[
-                              const SizedBox(height: 8),
-                              TextField(
-                                controller: _customCategoryController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Custom Category',
-                                  hintText: 'Enter custom category name',
-                                  border: OutlineInputBorder(),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-
-                      const SizedBox(height: 24),
-
-                      // Save button
-                      SizedBox(
-                        width: double.infinity,
-                        height: 50,
-                        child: ElevatedButton(
-                          onPressed: _isSaving ? null : _saveReceiptToBackend,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF7E5EFD),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                          ),
-                          child: _isSaving
-                              ? const Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              ),
-                              SizedBox(width: 12),
-                              Text(
-                                'Saving...',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          )
-                              : const Text(
-                            'Save',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ),
-
-                      // Delete button (only for existing receipts)
-                      if (!widget.isNewReceipt) ...[
-                        const SizedBox(height: 16),
-                        SizedBox(
-                          width: double.infinity,
-                          height: 50,
-                          child: OutlinedButton(
-                            onPressed: _isDeleting
-                                ? null
-                                : () => _deleteReceipt(context),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: Colors.red,
-                              side: const BorderSide(color: Colors.red),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                            ),
-                            child: const Text(
-                              'Delete Receipt',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
                   ),
                 ),
               ],
             ),
           ),
-        ),
-      ],
+
+          // Content area
+          Expanded(
+            child: SingleChildScrollView(
+              child: Column(
+                children: [
+                  // Receipt image with zoom button
+                  Stack(
+                    children: [
+                      GestureDetector(
+                        onTap: () => _openZoom(context), // Allow zooming on tap
+                        child: Image.network(
+                          widget
+                              .imageUrl, // Use the imageUrl passed from the backend
+                          width: double.infinity,
+                          height: 300,
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) => Container(
+                            height: 300,
+                            color: Colors.grey[300],
+                            child: const Center(
+                              child: Icon(Icons.broken_image,
+                                  size: 50, color: Colors.grey),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        right: 10,
+                        bottom: 10,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.5),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: IconButton(
+                            icon: const Icon(Icons.zoom_out_map,
+                                color: Colors.white),
+                            onPressed: () => _openZoom(context), // Open zoom view
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  // Receipt details section
+                  Padding(
+                    padding: const EdgeInsets.all(20.0),
+                    child: Column(
+                      children: [
+                        const Text(
+                          'Receipt Details',
+                          style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'All receipt information in one organized view.',
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: Colors.grey,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 20),
+
+                        // Editable fields container
+                        Container(
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE8E6FF),
+                            borderRadius: BorderRadius.circular(16),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.05),
+                                blurRadius: 10,
+                                offset: const Offset(0, 5),
+                              ),
+                            ],
+                          ),
+                          padding: const EdgeInsets.all(20),
+                          child: Column(
+                            children: [
+                              // Merchant field
+                              _buildEditableField(
+                                'Merchant',
+                                _merchantController,
+                                _editingMerchant,
+                                    () => setState(
+                                        () => _editingMerchant = !_editingMerchant),
+                              ),
+
+                              // Date field
+                              _buildEditableField(
+                                'Date',
+                                _dateController,
+                                _editingDate,
+                                    () =>
+                                    setState(() => _editingDate = !_editingDate),
+                              ),
+
+                              // Amount field with decimal support
+                              _buildEditableField(
+                                'Amount',
+                                _amountController,
+                                _editingAmount,
+                                    () => setState(
+                                        () => _editingAmount = !_editingAmount),
+                                prefix: _editingAmount ? currencySymbol : null,
+                                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                formatText: (text) => '$currencySymbol$text',
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                                ],
+                              ),
+
+                              // Category field - now editable just like merchant and amount
+                              _buildEditableField(
+                                'Category',
+                                _categoryController,
+                                _editingCategory,
+                                    () => setState(() => _editingCategory = !_editingCategory),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        const SizedBox(height: 24),
+
+                        // Save button
+                        SizedBox(
+                          width: double.infinity,
+                          height: 50,
+                          child: ElevatedButton(
+                            onPressed: _isSaving ? null : _saveReceiptToBackend,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF7E5EFD),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            child: _isSaving
+                                ? const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                ),
+                                SizedBox(width: 12),
+                                Text(
+                                  'Saving...',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            )
+                                : const Text(
+                              'Save',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+
+                        // Delete button (only for existing receipts)
+                        if (!widget.isNewReceipt) ...[
+                          const SizedBox(height: 16),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 50,
+                            child: OutlinedButton(
+                              onPressed: _isDeleting
+                                  ? null
+                                  : () => _deleteReceipt(context),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.red,
+                                side: const BorderSide(color: Colors.red),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
+                              child: const Text(
+                                'Delete Receipt',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+
+                        // Add bottom padding to ensure content isn't covered by system navigation
+                        const SizedBox(height: 16),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -808,6 +684,7 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
         TextInputType? keyboardType,
         String Function(String)? formatText,
         VoidCallback? onTap,
+        List<TextInputFormatter>? inputFormatters,
       }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -835,6 +712,7 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                   prefixText: prefix,
                 ),
                 keyboardType: keyboardType,
+                inputFormatters: inputFormatters,
                 onTap: onTap,
                 readOnly: onTap != null,
               )
@@ -860,53 +738,6 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
         const Divider(),
         const SizedBox(height: 8),
       ],
-    );
-  }
-
-  void _showCategoryPicker() {
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (context) {
-        return Container(
-          padding: const EdgeInsets.symmetric(vertical: 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Select Category',
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Expanded(
-                child: ListView.builder(
-                  itemCount: _categories.length,
-                  itemBuilder: (context, index) {
-                    final category = _categories[index];
-                    return ListTile(
-                      title: Text(category['name']),
-                      onTap: () {
-                        setState(() {
-                          _selectedCategoryId = category['categoryId'];
-                          _selectedCategoryName = category['name'];
-                          _categoryController.text = category['name'];
-                          _editingCategory = false;
-                        });
-                        Navigator.pop(context);
-                      },
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        );
-      },
     );
   }
 }

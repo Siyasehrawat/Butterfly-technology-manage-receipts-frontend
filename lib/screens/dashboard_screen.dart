@@ -31,12 +31,11 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   List<dynamic> savedReceipts = [];
-  Map<int, String> categoryMap = {}; // Map to store category ID to name mapping
   bool _isLoading = true;
   bool _isUploading = false;
   String _userName = 'User';
   bool _isLoadingUserName = true;
-  DateTime? _lastBackPressTime; // Track the last back button press time
+  DateTime? _lastBackPressTime;
 
   @override
   void initState() {
@@ -52,7 +51,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _userName = name;
           _isLoadingUserName = false;
         });
-        _fetchCategories().then((_) => _fetchSavedReceipts());
+        _fetchSavedReceipts();
       });
     });
   }
@@ -101,49 +100,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } catch (e) {
       debugPrint('Error fetching user name: $e');
       return 'User';
-    }
-  }
-
-  Future<void> _fetchCategories() async {
-    try {
-      final url =
-      Uri.parse('https://manage-receipt-backend-bnl1.onrender.com/api/categories/get-all-categories');
-      final response = await http.get(url);
-
-      if (response.statusCode == 200) {
-        final List<dynamic> data = json.decode(response.body);
-
-        // Create a map of category ID to category name
-        for (var category in data) {
-          categoryMap[category['categoryId']] = category['name'];
-        }
-
-        // Add a fallback for "Other" category
-        categoryMap[0] = 'Other';
-      } else {
-        // Fallback categories if API fails
-        categoryMap = {
-          1: 'Meal',
-          2: 'Education',
-          3: 'Medical',
-          4: 'Shopping',
-          5: 'Travel',
-          6: 'Rent',
-          0: 'Other',
-        };
-      }
-    } catch (e) {
-      debugPrint("Error fetching categories: $e");
-      // Fallback categories if API fails
-      categoryMap = {
-        1: 'Meal',
-        2: 'Education',
-        3: 'Medical',
-        4: 'Shopping',
-        5: 'Travel',
-        6: 'Rent',
-        0: 'Other',
-      };
     }
   }
 
@@ -407,18 +363,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       itemCount: recentReceipts.length,
       itemBuilder: (context, index) {
         final receipt = recentReceipts[index];
-        final imageUrl =
-            receipt['imageLink'] ?? ''; // Map imageLink from backend
+        final imageUrl = receipt['imageLink'] ?? '';
         final merchant = receipt['merchant']?.toString() ?? 'Unknown';
         final amount = receipt['amount']?.toString() ?? '0';
 
-        // Get category name from categoryId
-        String category = 'Uncategorized';
-        if (receipt['categoryId'] != null) {
-          final categoryId =
-              int.tryParse(receipt['categoryId'].toString()) ?? 0;
-          category = categoryMap[categoryId] ?? 'Uncategorized';
-        }
+        // Use the 'category' field directly
+        String category = receipt['category']?.toString() ?? 'Uncategorized';
 
         // Format the receiptDate
         String formattedDate = 'No date';
@@ -448,7 +398,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             );
 
-            // Refresh the list if the receipt was updated
             if (result == true) {
               _fetchSavedReceipts();
             }
@@ -477,15 +426,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ? Image.network(
                         imageUrl,
                         fit: BoxFit.cover,
-                        loadingBuilder: (context, child,
-                            loadingProgress) =>
+                        loadingBuilder: (context, child, loadingProgress) =>
                         loadingProgress == null
                             ? child
                             : const Center(
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            valueColor:
-                            AlwaysStoppedAnimation<Color>(
+                            valueColor: AlwaysStoppedAnimation<Color>(
                                 Color(0xFF7E5EFD)),
                           ),
                         ),

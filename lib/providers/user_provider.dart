@@ -20,17 +20,12 @@ class UserProvider with ChangeNotifier {
   Future<void> initFromStorage() async {
     final token = await _authManager.getToken();
     final userId = await _authManager.getUserId();
-    final email = await _authManager.getUserEmail();
-    final name = await _authManager.getUserName();
-
     print('Retrieved Token: $token');
     print('Retrieved User ID: $userId');
 
     if (token != null && userId != null) {
       _token = token;
       _userId = userId;
-      _email = email;
-      _username = name;
       notifyListeners();
     }
   }
@@ -42,13 +37,8 @@ class UserProvider with ChangeNotifier {
     _email = email;
     _token = token;
 
-    // Save auth data to persistent storage using saveAuthData instead of saveToken
-    _authManager.saveAuthData(
-      token: token,
-      userId: userId,
-      email: email,
-      name: username,
-    );
+    // Save token to persistent storage
+    _authManager.saveToken(token);
 
     notifyListeners();
   }
@@ -65,60 +55,18 @@ class UserProvider with ChangeNotifier {
 
   // Update user info
   void updateUserInfo({String? username, String? email}) {
-    if (username != null) {
-      _username = username;
-      // Update the stored username if it changed
-      if (_userId != null && _token != null) {
-        _authManager.saveAuthData(
-          token: _token!,
-          userId: _userId!,
-          email: _email,
-          name: username,
-        );
-      }
-    }
-
-    if (email != null) {
-      _email = email;
-      // Update the stored email if it changed
-      if (_userId != null && _token != null) {
-        _authManager.saveAuthData(
-          token: _token!,
-          userId: _userId!,
-          email: email,
-          name: _username,
-        );
-      }
-    }
-
+    if (username != null) _username = username;
+    if (email != null) _email = email;
     notifyListeners();
   }
 
   void setToken(String token) {
     _token = token;
-    // Update the stored token
-    if (_userId != null) {
-      _authManager.saveAuthData(
-        token: token,
-        userId: _userId!,
-        email: _email,
-        name: _username,
-      );
-    }
     notifyListeners();
   }
 
   void setUserId(String userId) {
     _userId = userId;
-    // Update the stored userId
-    if (_token != null) {
-      _authManager.saveAuthData(
-        token: _token!,
-        userId: userId,
-        email: _email,
-        name: _username,
-      );
-    }
     notifyListeners();
   }
 }

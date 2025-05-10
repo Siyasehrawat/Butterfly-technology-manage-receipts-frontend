@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'sign_in_screen.dart';
 import 'sign_up_screen.dart';
+import 'admin_login_screen.dart';
 import '../widgets/app_logo.dart';
 import '../widgets/social_login_buttons.dart';
 import '../widgets/curved_background.dart';
@@ -27,6 +28,15 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => SignUpScreen(),
+      ),
+    );
+  }
+
+  void _navigateToAdminLogin() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const AdminLoginScreen(),
       ),
     );
   }
@@ -69,7 +79,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           const Text(
-                            'Welcome To Receipt Manager',
+                            'Welcome To Manage Receipt',
                             style: TextStyle(
                               fontSize: 24,
                               fontWeight: FontWeight.bold,
