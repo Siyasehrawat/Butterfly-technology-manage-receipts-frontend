@@ -14,49 +14,65 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen> {
   final AuthManager _authManager = AuthManager();
+  bool _isCheckingAuth = true;
 
   @override
   void initState() {
     super.initState();
-    _checkLoginStatus();
+    // Check login status after a short delay to show splash screen
+    Future.delayed(const Duration(seconds: 2), () {
+      _checkLoginStatus();
+    });
   }
 
   Future<void> _checkLoginStatus() async {
-    // Add a small delay to show the splash screen
-    await Future.delayed(const Duration(seconds: 2));
+    setState(() {
+      _isCheckingAuth = true;
+    });
 
-    final isLoggedIn = await _authManager.isLoggedIn();
+    try {
+      final isLoggedIn = await _authManager.isLoggedIn();
 
-    if (isLoggedIn) {
-      // Get stored user data
-      final userId = await _authManager.getUserId();
-      final email = await _authManager.getUserEmail();
-      final name = await _authManager.getUserName();
-      final token = await _authManager.getToken();
+      if (isLoggedIn) {
+        // Get stored user data
+        final userId = await _authManager.getUserId();
+        final email = await _authManager.getUserEmail();
+        final name = await _authManager.getUserName();
+        final token = await _authManager.getToken();
 
-      if (userId != null && token != null) {
-        // Update the user provider
-        final userProvider = Provider.of<UserProvider>(context, listen: false);
-        userProvider.login(userId, name ?? '', email ?? '', token);
+        if (userId != null && token != null) {
+          // Update the user provider
+          final userProvider = Provider.of<UserProvider>(context, listen: false);
+          userProvider.login(userId, name ?? '', email ?? '', token);
 
-        // Navigate to dashboard
-        if (mounted) {
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute(
-              builder: (context) => DashboardScreen(
-                userId: userId,
-                token: token,
+          // Navigate to dashboard
+          if (mounted) {
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(
+                builder: (context) => DashboardScreen(
+                  userId: userId,
+                  token: token,
+                ),
               ),
-            ),
-          );
+            );
+          }
+        } else {
+          // Something is wrong with the stored data, go to welcome screen
+          _navigateToWelcome();
         }
       } else {
-        // Something is wrong with the stored data, go to welcome screen
+        // Not logged in, go to welcome screen
         _navigateToWelcome();
       }
-    } else {
-      // Not logged in, go to welcome screen
+    } catch (e) {
+      // Error occurred, go to welcome screen
       _navigateToWelcome();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isCheckingAuth = false;
+        });
+      }
     }
   }
 
@@ -114,9 +130,10 @@ class _SplashScreenState extends State<SplashScreen> {
               ),
             ),
             const SizedBox(height: 48),
-            const CircularProgressIndicator(
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-            ),
+            if (_isCheckingAuth)
+              const CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+              ),
           ],
         ),
       ),

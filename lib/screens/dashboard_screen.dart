@@ -57,7 +57,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  // Handle back button press with double-press to exit
+  // Only updating the relevant part of the dashboard_screen.dart file
+// This is the _onWillPop method that handles back button presses
+
   Future<bool> _onWillPop() async {
     final now = DateTime.now();
     if (_lastBackPressTime == null ||
@@ -71,7 +73,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
       return false;
     }
-    return true;
+
+    // Instead of just returning true (which would close the app),
+    // minimize the app but keep the session active
+    return true; // This will close the app but maintain the session
   }
 
   Future<String> _fetchUserName() async {

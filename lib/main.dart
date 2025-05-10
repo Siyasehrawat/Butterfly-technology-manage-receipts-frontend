@@ -19,6 +19,9 @@ import 'screens/filters_screen.dart';
 import 'screens/receipt_details_screen.dart';
 
 void main() {
+  // Ensure Flutter is initialized
+  WidgetsFlutterBinding.ensureInitialized();
+
   runApp(const MyApp());
 }
 
@@ -89,20 +92,33 @@ class MyApp extends StatelessWidget {
               '/sign_up': (context) => SignUpScreen(),
               '/forgot_password': (context) => ForgotPasswordScreen(),
               '/reset_password': (context) => ResetPasswordScreen(email: '', otp: '',),
-              '/profile': (context) => const ProfileScreen(userId: '', token: '',),
+              '/profile': (context) {
+                final userProvider = Provider.of<UserProvider>(context, listen: false);
+                return ProfileScreen(
+                  userId: userProvider.userId ?? '',
+                  token: userProvider.token ?? '',
+                );
+              },
               '/settings': (context) => const SettingsScreen(),
               '/update_password': (context) {
                 final userId = Provider.of<UserProvider>(context, listen: false).userId;
-                return UpdatePasswordScreen(userId: userId!);
+                return UpdatePasswordScreen(userId: userId ?? '');
               },
               '/reports': (context) {
                 final userId = Provider.of<UserProvider>(context, listen: false).userId;
-                return ReportsScreen(userId: userId!);
+                return ReportsScreen(userId: userId ?? '');
               },
               '/filters': (context) => const FiltersScreen(),
+              '/dashboard': (context) {
+                final userProvider = Provider.of<UserProvider>(context, listen: false);
+                return DashboardScreen(
+                  userId: userProvider.userId ?? '',
+                  token: userProvider.token ?? '',
+                );
+              },
             },
             onGenerateRoute: (settings) {
-              if (settings.name == '/dashboard') {
+              if (settings.name == '/dashboard' && settings.arguments != null) {
                 final args = settings.arguments as Map<String, dynamic>;
                 return MaterialPageRoute(
                   builder: (context) => DashboardScreen(
