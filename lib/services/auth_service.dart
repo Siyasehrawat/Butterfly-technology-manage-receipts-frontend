@@ -3,8 +3,6 @@ import 'dart:io';
 import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
-import 'package:google_sign_in/google_sign_in.dart';
-import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 import 'package:logger/logger.dart';
 import 'auth_manager.dart';
 
@@ -12,34 +10,11 @@ class AuthService {
   final Logger _logger = Logger();
   final AuthManager _authManager = AuthManager();
 
-  // Initialize Google Sign In with platform-specific configurations
-  late final GoogleSignIn _googleSignIn;
-
   // Your app's package name - IMPORTANT: This must match what's in your Google Cloud Console
   // ignore: unused_field
-  final String _packageName = 'com.example.Manage_Receipt';
+  final String _packageName = 'com.ButterflyTchnology.managereceipt';
 
   AuthService() {
-    // Configure Google Sign In based on platform
-    if (kIsWeb) {
-      _googleSignIn = GoogleSignIn(
-        // Web client ID
-        clientId: '246996175615-n11v96dstj56351q5cpeus8f0v55ne51.apps.googleusercontent.com',
-        scopes: ['email', 'profile'],
-      );
-    } else if (Platform.isIOS) {
-      _googleSignIn = GoogleSignIn(
-        // iOS client ID is configured in Info.plist
-        scopes: ['email', 'profile'],
-      );
-    } else {
-      // For Android, don't specify a clientId here - it will use the one from google-services.json
-      _googleSignIn = GoogleSignIn(
-        scopes: ['email', 'profile'],
-        serverClientId: '246996175615-n11v96dstj56351q5cpeus8f0v55ne51.apps.googleusercontent.com',
-      );
-    }
-
     _logger.i('AuthService initialized for platform: ${kIsWeb ? 'Web' : Platform.operatingSystem}');
   }
 
@@ -321,21 +296,11 @@ class AuthService {
     try {
       _logger.i('Starting sign out process');
 
-      // Sign out from Google
-      if (await _googleSignIn.isSignedIn()) {
-        await _googleSignIn.signOut();
-        _logger.i('Signed out from Google');
-      }
-
-      // Sign out from Facebook
-      await FacebookAuth.instance.logOut();
-      _logger.i('Signed out from Facebook');
-
       // Clear stored authentication data
       await _authManager.clearAuthData();
       _logger.i('Cleared stored authentication data');
 
-      _logger.i('Successfully signed out from all providers');
+      _logger.i('Successfully signed out');
     } catch (e) {
       _logger.e('Sign out error: $e');
     }
@@ -358,5 +323,20 @@ class AuthService {
   // Check if user is logged in
   Future<bool> isLoggedIn() async {
     return await _authManager.isLoggedIn();
+  }
+
+  // Placeholder methods for social login (to avoid breaking existing code)
+  Future<Map<String, dynamic>> signInWithGoogle({bool termsAccepted = true}) async {
+    return {
+      'success': false,
+      'message': 'Social login is currently disabled'
+    };
+  }
+
+  Future<Map<String, dynamic>> signInWithFacebook({bool termsAccepted = true}) async {
+    return {
+      'success': false,
+      'message': 'Social login is currently disabled'
+    };
   }
 }

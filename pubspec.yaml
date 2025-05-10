@@ -25,8 +25,6 @@ dependencies:
   cached_network_image: ^3.3.0
   flutter_native_splash: ^2.3.2
   flutter_launcher_icons: ^0.13.1
-  google_sign_in: ^6.1.5
-  flutter_facebook_auth: ^6.0.2
   universal_html: ^2.2.4
   image_picker_web: ^3.1.1
   url_strategy: ^0.2.0
@@ -39,7 +37,6 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^2.0.0
-  flutter_launcher_icons: ^0.13.1
 
 flutter_icons:
   android: "ic_launcher"

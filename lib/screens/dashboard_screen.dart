@@ -229,7 +229,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
 
       // Add a timeout for the request
-      var response = await request.send().timeout(const Duration(seconds: 20));
+      var response = await request.send().timeout(const Duration(seconds: 100));
       var responseBody = await response.stream.bytesToString();
       var jsonResponse = json.decode(responseBody);
 
@@ -663,7 +663,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       minimumSize: const Size(double.infinity, 56),
                     ),
                     child: const Text(
-                      'Upload receipt Photo',
+                      'Upload Receipt Photo',
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
@@ -689,7 +689,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       minimumSize: const Size(double.infinity, 56),
                     ),
                     child: const Text(
-                      'Take receipt  Photo',
+                      'Take Receipt Photo',
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w600,

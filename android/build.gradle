@@ -6,9 +6,8 @@ buildscript {
     }
 
     dependencies {
-        classpath 'com.android.tools.build:gradle:7.3.1'
+        classpath 'com.android.tools.build:gradle:7.3.0'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
-        //classpath 'com.google.gms:google-services:4.3.15'  // Add this line
     }
 }
 
@@ -25,9 +24,14 @@ subprojects {
 }
 subprojects {
     project.evaluationDependsOn(':app')
+
+    // Add this to fix Java version warnings
+    project.configurations.all {
+        resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22'
+        resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22'
+    }
 }
 
 tasks.register("clean", Delete) {
     delete rootProject.buildDir
 }
-//apply plugin: 'com.google.gms.google-services'
