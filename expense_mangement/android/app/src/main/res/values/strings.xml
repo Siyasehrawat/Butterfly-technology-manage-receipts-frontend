@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Expense Mangement</string>
+    <string name="facebook_app_id">715574160798819</string>
+    <string name="fb_login_protocol_scheme">fb715574160798819</string>
+    <string name="facebook_client_token">aa5e228f79b013a1e82dcb455667c2da</string>
+</resources>
