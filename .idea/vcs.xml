@@ -4,6 +4,6 @@
     <mapping directory="$PROJECT_DIR$" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/expense_mangement" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/expense_mangement/ios" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/expense_mangement/ios/Pods" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/expense_mangement/ios_backup" vcs="Git" />
   </component>
 </project>
