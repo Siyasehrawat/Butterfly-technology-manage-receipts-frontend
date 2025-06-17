@@ -133,39 +133,26 @@ class ExportHelper {
         // Request storage permission for Android
         final status = await Permission.storage.request();
         if (!status.isGranted) {
-          // Try with manage external storage permission for Android 11+
           final manageStatus = await Permission.manageExternalStorage.request();
           if (!manageStatus.isGranted) {
             throw Exception('Storage permission denied');
           }
         }
 
-        // Try to save to Downloads folder
+        // Use public Downloads directory
         Directory? directory;
-
-        // Try different paths for different Android versions
-        final possiblePaths = [
-          '/storage/emulated/0/Download',
-          '/storage/emulated/0/Downloads',
-          '/sdcard/Download',
-          '/sdcard/Downloads',
-        ];
-
-        for (final path in possiblePaths) {
-          final testDir = Directory(path);
-          if (await testDir.exists()) {
-            directory = testDir;
-            break;
+        try {
+          directory = Directory('/storage/emulated/0/Download');
+          if (!await directory.exists()) {
+            directory = await getExternalStorageDirectory();
           }
+        } catch (e) {
+          directory = await getExternalStorageDirectory();
         }
-
-        // Fallback to external storage directory
-        directory ??= await getExternalStorageDirectory();
 
         if (directory == null) {
-          throw Exception('Could not access storage directory');
+          throw Exception('Could not find a valid directory to save the file.');
         }
-
         final file = File('${directory.path}/$filename');
         await file.writeAsBytes(bytes);
 

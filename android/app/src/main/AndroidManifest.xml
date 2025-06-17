@@ -18,7 +18,6 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
-    <!-- REMOVED: MANAGE_EXTERNAL_STORAGE - Not needed for receipt app -->
 
     <application
         android:label="Manage Receipt"

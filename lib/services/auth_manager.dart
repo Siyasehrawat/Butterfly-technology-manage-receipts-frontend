@@ -2,12 +2,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class AuthManager {
   // Keys for SharedPreferences
-  static const String _tokenKey = 'token'; // Changed key to 'token'
-  static const String _userIdKey = 'userId'; // Changed key to 'userId'
+  static const String _tokenKey = 'token';
+  static const String _userIdKey = 'userId';
   static const String _userEmailKey = 'user_email';
   static const String _userNameKey = 'user_name';
-  static const String _adminAccessKey =
-      'admin_access'; // Added key for admin access
+  static const String _adminAccessKey = 'admin_access';
+  static const String _userCountryKey = 'user_country';
 
   // Save authentication data
   Future<void> saveAuthData({
@@ -15,7 +15,8 @@ class AuthManager {
     required String userId,
     String? email,
     String? name,
-    bool hasAdminAccess = false, // Added parameter for admin access
+    String? country,
+    bool hasAdminAccess = false,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_tokenKey, token);
@@ -27,6 +28,11 @@ class AuthManager {
 
     if (name != null) {
       await prefs.setString(_userNameKey, name);
+    }
+
+    // Save country if provided
+    if (country != null) {
+      await prefs.setString(_userCountryKey, country);
     }
 
     // Save admin access status
@@ -63,6 +69,12 @@ class AuthManager {
     return prefs.getBool(_adminAccessKey) ?? false;
   }
 
+  // Get user country
+  Future<String?> getUserCountry() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_userCountryKey);
+  }
+
   // Check if user is logged in
   Future<bool> isLoggedIn() async {
     final token = await getToken();
@@ -77,6 +89,7 @@ class AuthManager {
     await prefs.remove(_userIdKey);
     await prefs.remove(_userEmailKey);
     await prefs.remove(_userNameKey);
-    await prefs.remove(_adminAccessKey); // Clear admin access status
+    await prefs.remove(_userCountryKey);
+    await prefs.remove(_adminAccessKey);
   }
 }

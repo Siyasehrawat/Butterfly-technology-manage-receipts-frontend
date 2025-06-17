@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/user_provider.dart';
-import '../providers/setting_provider.dart';
 
 class EditAmountScreen extends StatefulWidget {
   final String initialMinValue;
@@ -77,10 +76,9 @@ class _EditAmountScreenState extends State<EditAmountScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Get currency symbol from providers
+    // Get currency symbol from UserProvider
     final userProvider = Provider.of<UserProvider>(context);
-    final settingsProvider = Provider.of<SettingsProvider>(context);
-    final currencySymbol = userProvider.currencySymbol ?? settingsProvider.currencySymbol ?? '\$';
+    final currencySymbol = userProvider.effectiveCurrencySymbol;
 
     return Scaffold(
       body: Column(

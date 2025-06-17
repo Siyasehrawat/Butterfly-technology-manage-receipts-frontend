@@ -1,6 +1,4 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import '../providers/receipt_provider.dart';
 
@@ -17,8 +15,17 @@ class EditCategoryScreen extends StatefulWidget {
 }
 
 class _EditCategoryScreenState extends State<EditCategoryScreen> {
-  bool _isLoading = true;
-  List<Map<String, dynamic>> _categories = [];
+  // Hardcoded categories - no API call needed
+  final List<Map<String, dynamic>> _categories = [
+    {'categoryId': 1, 'name': 'Meal'},
+    {'categoryId': 2, 'name': 'Education'},
+    {'categoryId': 3, 'name': 'Medical'},
+    {'categoryId': 4, 'name': 'Shopping'},
+    {'categoryId': 5, 'name': 'Travel'},
+    {'categoryId': 6, 'name': 'Rent'},
+    {'categoryId': 7, 'name': 'Other'},
+  ];
+
   List<int> _selectedCategoryIds = [];
   List<String> _selectedCategoryNames = [];
   final TextEditingController _customCategoryController = TextEditingController();
@@ -26,63 +33,24 @@ class _EditCategoryScreenState extends State<EditCategoryScreen> {
   @override
   void initState() {
     super.initState();
-    _fetchCategories().then((_) {
-      // Initialize selected categories if initialValue is provided
-      if (widget.initialValue != null && widget.initialValue!.isNotEmpty) {
-        final initialCategory = _categories.firstWhere(
-              (cat) => cat['name'] == widget.initialValue,
-          orElse: () => {'categoryId': 0, 'name': 'Other'},
-        );
+    // Initialize selected categories if initialValue is provided
+    if (widget.initialValue != null && widget.initialValue!.isNotEmpty) {
+      final initialCategory = _categories.firstWhere(
+            (cat) => cat['name'] == widget.initialValue,
+        orElse: () => {'categoryId': 7, 'name': 'Other'},
+      );
 
-        setState(() {
-          _selectedCategoryIds = [initialCategory['categoryId']];
-          _selectedCategoryNames = [initialCategory['name']];
-        });
-      }
-    });
+      setState(() {
+        _selectedCategoryIds = [initialCategory['categoryId']];
+        _selectedCategoryNames = [initialCategory['name']];
+      });
+    }
   }
 
   @override
   void dispose() {
     _customCategoryController.dispose();
     super.dispose();
-  }
-
-  Future<void> _fetchCategories() async {
-    try {
-      final url = Uri.parse(
-        'https://manage-receipt-backend-bnl1.onrender.com/api/categories/get-all-categories',
-      );
-      final response = await http.get(url);
-
-      if (response.statusCode == 200) {
-        List<dynamic> categoryList = json.decode(response.body);
-        List<Map<String, dynamic>> fetchedCategories =
-        List<Map<String, dynamic>>.from(categoryList);
-
-        setState(() {
-          _categories = fetchedCategories;
-          _isLoading = false;
-        });
-      } else {
-        throw Exception('Failed to load categories');
-      }
-    } catch (e) {
-      debugPrint('Error fetching categories: $e');
-      setState(() {
-        // Default categories if API fails
-        _categories = [
-          {'categoryId': 1, 'name': 'Meal'},
-          {'categoryId': 2, 'name': 'Education'},
-          {'categoryId': 3, 'name': 'Medical'},
-          {'categoryId': 4, 'name': 'Shopping'},
-          {'categoryId': 5, 'name': 'Travel'},
-          {'categoryId': 6, 'name': 'Rent'},
-          {'categoryId': 0, 'name': 'Other'},
-        ];
-        _isLoading = false;
-      });
-    }
   }
 
   void _toggleCategory(int categoryId, String categoryName) {
@@ -144,9 +112,7 @@ class _EditCategoryScreenState extends State<EditCategoryScreen> {
           ),
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: Color(0xFF7E5EFD)))
-          : Column(
+      body: Column(
         children: [
           Expanded(
             child: ListView.builder(
@@ -170,7 +136,7 @@ class _EditCategoryScreenState extends State<EditCategoryScreen> {
             ),
           ),
           // Custom category input (only shown when "Other" is selected)
-          if (_selectedCategoryIds.contains(0))
+          if (_selectedCategoryIds.contains(7))
             Padding(
               padding: const EdgeInsets.all(16.0),
               child: TextField(

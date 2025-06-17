@@ -119,38 +119,17 @@ class ReceiptService {
     }
   }
 
-  // Get categories
+  // Get hardcoded categories - no API call
   Future<List<String>> getCategories() async {
-    try {
-      logger.d('Fetching categories');
-
-      final response = await http.get(Uri.parse('https://manage-receipt-backend-bnl1.onrender.com/api/categories/get-all-categories'));
-      if (response.statusCode == 200) {
-        final List<dynamic> data = json.decode(response.body);
-        return data.map((category) => category['name'].toString()).toList();
-      } else {
-        return [
-          'Meal',
-          'Education',
-          'Medical',
-          'Shopping',
-          'Travel',
-          'Rent',
-          'Other'
-        ];
-      }
-    } catch (e) {
-      logger.e('Error fetching categories: $e');
-      return [
-        'Meal',
-        'Education',
-        'Medical',
-        'Shopping',
-        'Travel',
-        'Rent',
-        'Other'
-      ];
-    }
+    return [
+      'Meal',
+      'Education',
+      'Medical',
+      'Shopping',
+      'Travel',
+      'Rent',
+      'Other'
+    ];
   }
 
   // Get merchants

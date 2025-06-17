@@ -25,7 +25,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final _emailController = TextEditingController();
   final _addressController = TextEditingController();
   final _phoneController = TextEditingController();
-  final _countryController = TextEditingController(); // Added for country display
+  final _countryController = TextEditingController();
   File? _profileImage;
   final _formKey = GlobalKey<FormState>();
   bool _isLoading = true;
@@ -425,7 +425,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     // Get currency symbol from UserProvider
     final userProvider = Provider.of<UserProvider>(context);
-    final currencySymbol = userProvider.currencySymbol ?? '\$';
+    final currencySymbol = userProvider.effectiveCurrencySymbol;
 
     return Scaffold(
       body: _isLoading
@@ -658,8 +658,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               TextFormField(
                                 controller: _emailController,
                                 enabled: false, // Make it non-editable
-                                keyboardType:
-                                TextInputType.emailAddress,
+                                keyboardType: TextInputType.emailAddress,
                                 decoration: InputDecoration(
                                   hintText: 'Email address',
                                   contentPadding:
@@ -753,11 +752,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   ),
                                 ),
                                 validator: (value) {
-                                  if (value != null &&
-                                      value.isNotEmpty) {
-                                    if (value.length < 10) {
-                                      return 'Please enter a valid phone number';
-                                    }
+                                  if (value == null || value.isEmpty) {
+                                    return 'Please enter your phone number';
+                                  }
+                                  if (!RegExp(r'^[0-9]+$')
+                                      .hasMatch(value)) {
+                                    return 'Phone number must contain only numbers';
+                                  }
+                                  if (value.length != 10) {
+                                    return 'Phone number must be exactly 10 digits';
                                   }
                                   return null;
                                 },
@@ -793,23 +796,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                           borderRadius:
                                           BorderRadius.circular(8),
                                           borderSide: BorderSide(
-                                            color:
-                                            const Color(0xFF7E5EFD)
+                                            color: const Color(0xFF7E5EFD)
                                                 .withOpacity(0.5),
                                           ),
                                         ),
-                                        enabledBorder:
-                                        OutlineInputBorder(
+                                        enabledBorder: OutlineInputBorder(
                                           borderRadius:
                                           BorderRadius.circular(8),
                                           borderSide: BorderSide(
-                                            color:
-                                            const Color(0xFF7E5EFD)
+                                            color: const Color(0xFF7E5EFD)
                                                 .withOpacity(0.5),
                                           ),
                                         ),
-                                        focusedBorder:
-                                        OutlineInputBorder(
+                                        focusedBorder: OutlineInputBorder(
                                           borderRadius:
                                           BorderRadius.circular(8),
                                           borderSide: const BorderSide(
@@ -839,8 +838,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                         )
                                             : const Icon(
                                           Icons.my_location,
-                                          color:
-                                          Color(0xFF7E5EFD),
+                                          color: Color(0xFF7E5EFD),
                                         ),
                                         tooltip: 'Use current location',
                                       ),
@@ -858,7 +856,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ),
                               const SizedBox(height: 20),
 
-                              // Country field - Non-editable
+                              // Country field - Non-editable with currency info
                               const Text(
                                 'Country',
                                 style: TextStyle(

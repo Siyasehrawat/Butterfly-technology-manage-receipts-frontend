@@ -5,7 +5,6 @@ import 'dart:convert';
 import 'profile_screen.dart';
 import 'update_password_screen.dart';
 import '../providers/user_provider.dart';
-import '../providers/setting_provider.dart';
 import 'welcome_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -255,7 +254,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             decoration: BoxDecoration(
                               color: Colors.white,
                               borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: const Color(0xFF7E5EFD)),
+                              border:
+                              Border.all(color: const Color(0xFF7E5EFD)),
                             ),
                             child: const Text(
                               'Light Mode',
@@ -296,36 +296,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 ),
                                 TextButton(
                                   onPressed: () async {
-                                    Navigator.pop(context);
-
+                                    // Do NOT pop the dialog here!
                                     final userId = userProvider.userId ?? '';
                                     final token = userProvider.token ?? '';
 
-                                    debugPrint('UserID: $userId, Token: $token');
+                                    debugPrint(
+                                        'UserID: $userId, Token: $token');
 
                                     if (userId.isEmpty) {
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('User ID is missing. Cannot delete account.'),
-                                          backgroundColor: Colors.red,
-                                        ),
-                                      );
+                                      if (mounted) {
+                                        Navigator.pop(context);
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                          const SnackBar(
+                                            content: Text(
+                                                'User ID is missing. Cannot delete account.'),
+                                            backgroundColor: Colors.red,
+                                          ),
+                                        );
+                                      }
                                       return;
                                     }
 
                                     if (token.isEmpty) {
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('Authentication token is missing. Please log in again.'),
-                                          backgroundColor: Colors.red,
-                                        ),
-                                      );
+                                      if (mounted) {
+                                        Navigator.pop(context);
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                          const SnackBar(
+                                            content: Text(
+                                                'Authentication token is missing. Please log in again.'),
+                                            backgroundColor: Colors.red,
+                                          ),
+                                        );
+                                      }
                                       return;
                                     }
 
                                     try {
+                                      debugPrint('Sending delete account request...');
                                       final response = await http.post(
-                                        Uri.parse('https://manage-receipt-backend-bnl1.onrender.com/api/users/delete-account'),
+                                        Uri.parse(
+                                            'https://manage-receipt-backend-bnl1.onrender.com/api/users/delete-account'),
                                         headers: {
                                           'Content-Type': 'application/json',
                                           'Authorization': 'Bearer $token',
@@ -333,44 +345,69 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                         body: jsonEncode({'userId': userId}),
                                       );
 
+                                      debugPrint(
+                                          'Delete account response status: ${response.statusCode}');
+                                      debugPrint(
+                                          'Delete account response body: ${response.body}');
+
                                       if (response.statusCode == 200) {
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          const SnackBar(
-                                            content: Text('Account deleted successfully.'),
-                                            backgroundColor: Colors.green,
-                                          ),
-                                        );
+                                        if (mounted) {
+                                          Navigator.pop(context);
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            const SnackBar(
+                                              content: Text(
+                                                  'Account deleted successfully.'),
+                                              backgroundColor: Colors.green,
+                                            ),
+                                          );
+                                        }
 
                                         await userProvider.logout();
 
-                                        Navigator.pushAndRemoveUntil(
-                                          context,
-                                          MaterialPageRoute(builder: (context) => const WelcomeScreen()),
-                                              (route) => false,
-                                        );
-                                      } else if (response.statusCode == 404) {
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          const SnackBar(
-                                            content: Text('User not found.'),
-                                            backgroundColor: Colors.red,
-                                          ),
-                                        );
+                                        if (mounted) {
+                                          Navigator.pushAndRemoveUntil(
+                                            context,
+                                            MaterialPageRoute(
+                                                builder: (context) =>
+                                                const WelcomeScreen()),
+                                                (route) => false,
+                                          );
+                                        }
                                       } else {
-                                        ScaffoldMessenger.of(context).showSnackBar(
+                                        // Extract error message from backend response
+                                        String errorMsg = 'Failed to delete account.';
+                                        try {
+                                          final decoded = jsonDecode(response.body);
+                                          if (decoded is Map && decoded['error'] != null) {
+                                            errorMsg = decoded['error'].toString();
+                                          }
+                                        } catch (_) {
+                                          debugPrint('Error parsing backend response.');
+                                        }
+                                        if (mounted) {
+                                          Navigator.pop(context);
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            SnackBar(
+                                              content: Text(errorMsg),
+                                              backgroundColor: Colors.red,
+                                            ),
+                                          );
+                                        }
+                                      }
+                                    } catch (e) {
+                                      debugPrint('Error deleting account: $e');
+                                      if (mounted) {
+                                        Navigator.pop(context);
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
                                           SnackBar(
-                                            content: Text('Failed to delete account: ${response.body}'),
+                                            content: Text(
+                                                'An error occurred: $e'),
                                             backgroundColor: Colors.red,
                                           ),
                                         );
                                       }
-                                    } catch (e) {
-                                      debugPrint('Error deleting account: $e');
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('An error occurred. Please try again later.'),
-                                          backgroundColor: Colors.red,
-                                        ),
-                                      );
                                     }
                                   },
                                   child: const Text(

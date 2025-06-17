@@ -10,7 +10,6 @@ import '../services/auth_service.dart';
 import '../providers/user_provider.dart';
 import '../providers/setting_provider.dart';
 
-
 class SignInScreen extends StatefulWidget {
   SignInScreen({super.key});
 
@@ -58,6 +57,8 @@ class _SignInScreenState extends State<SignInScreen> {
           final bool hasAdminAccess = result['hasAdminAccess'] ?? false;
 
           print('SignIn - Admin access from backend: $hasAdminAccess');
+          print('SignIn - Country from backend: ${result['country']}');
+          print('SignIn - Currency from backend: ${result['currency']} (${result['currencySymbol']})');
 
           userProvider.login(
             result['userId'],
@@ -65,6 +66,7 @@ class _SignInScreenState extends State<SignInScreen> {
             _emailController.text.trim(),
             result['token'] ?? '',
             hasAdminAccess: hasAdminAccess,
+            country: result['country'],
             currency: result['currency'],
             currencySymbol: result['currencySymbol'],
           );
@@ -72,13 +74,17 @@ class _SignInScreenState extends State<SignInScreen> {
           // Set country and currency from backend response
           if (result['country'] != null) {
             await userProvider.setCountry(result['country']);
+            print('SignIn - Country set to: ${result['country']}');
           }
 
           if (result['currencySymbol'] != null) {
             await settingsProvider.setCurrencySymbol(result['currencySymbol']);
+            print('SignIn - Currency symbol set to: ${result['currencySymbol']}');
           }
 
           print('SignIn - User provider admin access after login: ${userProvider.hasAdminAccess}');
+          print('SignIn - User provider country after login: ${userProvider.country}');
+          print('SignIn - User provider currency after login: ${userProvider.currency} (${userProvider.currencySymbol})');
 
           if (mounted) {
             // Always navigate to dashboard first, admin panel will be available in drawer

@@ -48,8 +48,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     'Filling in missing pieces...',
     'Processing complete!'
   ];
-  Timer? _progressTimer;
-  Timer? _timeoutTimer;
+  Timer? _progressTimer; // Removed timeout timer
 
   @override
   void initState() {
@@ -67,7 +66,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void dispose() {
     _progressTimer?.cancel();
-    _timeoutTimer?.cancel();
     super.dispose();
   }
 
@@ -99,8 +97,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _fetchUserName() async {
     try {
       final response = await http.get(
-        Uri.parse(
-            'https://manage-receipt-backend-bnl1.onrender.com/api/users/profile'),
+        Uri.parse('https://manage-receipt-backend-bnl1.onrender.com/api/users/profile'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
 
@@ -126,8 +123,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() => _isLoading = true);
 
     try {
-      // Fetch all receipts first, not just limited to 5
-      final url = "https://manage-receipt-backend-bnl1.onrender.com/api/receipts/${widget.userId}";
+      final url =
+          "https://manage-receipt-backend-bnl1.onrender.com/api/receipts/${widget.userId}?limit=5";
 
       final response = await http.get(
         Uri.parse(url),
@@ -143,22 +140,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
         debugPrint('Dashboard - Total receipts from API: ${receipts.length}');
 
-        // More lenient filtering - only exclude explicitly unsaved receipts
+        // Filter and sort receipts by the most recent date
         receipts = receipts.where((receipt) {
           final isSaved = receipt['isSaved'];
-          // Include receipt if isSaved is null, true, or not explicitly false
-          final shouldInclude = isSaved == null || isSaved == true || isSaved != false;
-
-          if (!shouldInclude) {
-            debugPrint('Dashboard - Excluding receipt: ${receipt['merchant']} (isSaved: $isSaved)');
-          }
-
-          return shouldInclude;
+          return isSaved == null || isSaved == true || isSaved != false;
         }).toList();
 
-        debugPrint('Dashboard - Receipts after filtering: ${receipts.length}');
-
-        // Sort by most recent first
         receipts.sort((a, b) {
           DateTime? dateA = _parseDate(a['updatedAt']) ??
               _parseDate(a['createdAt']) ??
@@ -171,15 +158,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
           if (dateA == null) return 1;
           if (dateB == null) return -1;
 
-          return dateB.compareTo(dateA);
+          return dateB.compareTo(dateA); // Sort by most recent first
         });
 
-        // Take only the 5 most recent for dashboard display
+        // Take only the 5 most recent receipts
         final recentReceipts = receipts.take(5).toList();
 
         debugPrint('Dashboard - Showing ${recentReceipts.length} recent receipts');
         for (var receipt in recentReceipts) {
-          debugPrint('Dashboard - Receipt: ${receipt['merchant']} - ${receipt['receiptDate']} (isSaved: ${receipt['isSaved']})');
+          debugPrint(
+              'Dashboard - Receipt: ${receipt['merchant']} - ${receipt['receiptDate']} (isSaved: ${receipt['isSaved']})');
         }
 
         setState(() {
@@ -187,7 +175,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _isLoading = false;
         });
       } else {
-        debugPrint('Dashboard - Failed to load receipts: ${response.statusCode} - ${response.body}');
+        debugPrint(
+            'Dashboard - Failed to load receipts: ${response.statusCode} - ${response.body}');
         setState(() => _isLoading = false);
       }
     } catch (e) {
@@ -211,73 +200,41 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  // Start upload progress animation with timeout
+  // Start upload progress animation without timeout
   void _startUploadProgress() {
     setState(() {
       _currentStep = 0;
       _uploadStatus = _uploadSteps[0];
     });
 
-    // Start timeout timer (20 seconds)
-    _timeoutTimer = Timer(const Duration(seconds: 20), () {
-      if (_isUploading) {
-        _handleUploadTimeout();
-      }
-    });
+    _progressTimer =
+        Timer.periodic(const Duration(milliseconds: 1500), (timer) {
+          if (!_isUploading) {
+            timer.cancel();
+            return;
+          }
 
-    _progressTimer = Timer.periodic(const Duration(milliseconds: 1500), (timer) {
-      if (!_isUploading) {
-        timer.cancel();
-        return;
-      }
-
-      if (_currentStep < _uploadSteps.length - 1) {
-        setState(() {
-          _currentStep++;
-          _uploadStatus = _uploadSteps[_currentStep];
+          if (_currentStep < _uploadSteps.length - 1) {
+            setState(() {
+              _currentStep++;
+              _uploadStatus = _uploadSteps[_currentStep];
+            });
+          } else {
+            timer.cancel();
+          }
         });
-      } else {
-        timer.cancel();
-      }
-    });
   }
 
-  void _handleUploadTimeout() {
-    _progressTimer?.cancel();
-    _timeoutTimer?.cancel();
-
-    setState(() {
-      _isUploading = false;
-    });
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Upload timed out. Please try again.'),
-          backgroundColor: Colors.red,
-          duration: Duration(seconds: 5),
-        ),
-      );
-    }
-  }
-
-  // Navigate to manual receipt entry
+  // Navigate to manual receipt entry - simplified payload
   void _createManualReceipt() async {
     debugPrint('Dashboard - Creating manual receipt');
 
-    // Generate a unique imageId for manual receipts
-    final manualImageId = 'manual_${DateTime.now().millisecondsSinceEpoch}_${widget.userId}';
-
-    // Create an empty receipt object for manual entry
+    // Create an empty receipt object for manual entry - simplified
     final emptyReceipt = {
       'merchant': '',
       'receiptDate': DateFormat('MM-dd-yyyy').format(DateTime.now()),
       'amount': '',
       'category': '',
-      'imageUrl': 'https://via.placeholder.com/300x400/E8E6FF/7E5EFD?text=Manual+Receipt',
-      'imageId': manualImageId,
-      'isManual': true,
-      'isSaved': false, // Start as unsaved
     };
 
     final result = await Navigator.push(
@@ -285,9 +242,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       MaterialPageRoute(
         builder: (context) => ReceiptDetailsScreen(
           receipt: emptyReceipt,
-          imageUrl: emptyReceipt['imageUrl']as String? ?? '',
+          imageUrl: '',
           userId: widget.userId,
-          imageId: manualImageId,
+          imageId: '',
           isNewReceipt: true,
           isPdf: false,
           isManualReceipt: true,
@@ -419,7 +376,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         );
       }
 
-      var response = await request.send().timeout(const Duration(seconds: 20));
+      var response = await request.send();
       var responseBody = await response.stream.bytesToString();
       var jsonResponse = json.decode(responseBody);
 
@@ -429,24 +386,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         throw Exception(
             "Cloudinary error: ${jsonResponse['error']?['message'] ?? 'Unknown error'}");
       }
-    } on TimeoutException {
-      _handleUploadTimeout();
-    } on http.ClientException catch (e) {
-      debugPrint("Upload Error: $e");
-      _progressTimer?.cancel();
-      _timeoutTimer?.cancel();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text(
-                'Network error. Please check your connection and try again.')),
-      );
-      setState(() {
-        _isUploading = false;
-      });
     } catch (e) {
       debugPrint("Upload Error: $e");
       _progressTimer?.cancel();
-      _timeoutTimer?.cancel();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
             content: Text('Failed to upload image. Please try again.')),
@@ -469,10 +411,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           'Authorization': 'Bearer ${widget.token}',
         },
         body: json.encode({'imageUrl': imageUrl, 'userId': widget.userId}),
-      ).timeout(const Duration(seconds: 20));
+      );
 
       _progressTimer?.cancel();
-      _timeoutTimer?.cancel();
       setState(() {
         _isUploading = false;
       });
@@ -511,12 +452,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final error = json.decode(response.body)['error'] ?? 'Unknown error';
         throw Exception('Backend error: $error');
       }
-    } on TimeoutException {
-      _handleUploadTimeout();
     } catch (e) {
       debugPrint("Backend Error: $e");
       _progressTimer?.cancel();
-      _timeoutTimer?.cancel();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Failed to process receipt. Please try again.'),
@@ -527,6 +465,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       });
     }
   }
+
+
 
   void _logout(BuildContext context) async {
     final authService = AuthService();
@@ -585,7 +525,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         throw Exception('File data not available');
       }
 
-      var response = await request.send().timeout(const Duration(seconds: 20));
+      var response = await request.send();
       var responseBody = await response.stream.bytesToString();
       var jsonResponse = json.decode(responseBody);
 
@@ -600,24 +540,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         throw Exception(
             "Cloudinary error: ${jsonResponse['error']?['message'] ?? 'Unknown error'}");
       }
-    } on TimeoutException {
-      _handleUploadTimeout();
-    } on http.ClientException catch (e) {
-      debugPrint("Upload Error: $e");
-      _progressTimer?.cancel();
-      _timeoutTimer?.cancel();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text(
-                'Network error. Please check your connection and try again.')),
-      );
-      setState(() {
-        _isUploading = false;
-      });
     } catch (e) {
       debugPrint("Upload Error: $e");
       _progressTimer?.cancel();
-      _timeoutTimer?.cancel();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
             content: Text('Failed to upload file. Please try again.')),
@@ -640,10 +565,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           'Authorization': 'Bearer ${widget.token}',
         },
         body: json.encode({'pdfUrl': pdfUrl, 'userId': widget.userId}),
-      ).timeout(const Duration(seconds: 20));
+      );
 
       _progressTimer?.cancel();
-      _timeoutTimer?.cancel();
       setState(() {
         _isUploading = false;
       });
@@ -682,12 +606,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final error = json.decode(response.body)['error'] ?? 'Unknown error';
         throw Exception('Backend error: $error');
       }
-    } on TimeoutException {
-      _handleUploadTimeout();
     } catch (e) {
       debugPrint("Backend Error: $e");
       _progressTimer?.cancel();
-      _timeoutTimer?.cancel();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Failed to process PDF. Please try again.'),
@@ -761,12 +682,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
 
         final isPdf = imageUrl.toLowerCase().endsWith('.pdf');
-        final isManual = receipt['isManual'] == true || imageUrl.contains('placeholder') || imageUrl.contains('Manual+Receipt');
+        final isManual = receipt['isManual'] == true ||
+            imageUrl.contains('placeholder') ||
+            imageUrl.contains('Manual+Receipt');
 
         // Get currency symbol from providers
         final userProvider = Provider.of<UserProvider>(context);
         final settingsProvider = Provider.of<SettingsProvider>(context);
-        final currencySymbol = userProvider.currencySymbol ?? settingsProvider.currencySymbol ?? '\$';
+        final currencySymbol =
+            userProvider.currencySymbol ?? settingsProvider.currencySymbol;
 
         return GestureDetector(
           onTap: () async {
@@ -877,7 +801,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
                             Text(
-                              '$currencySymbol $amount', // Added space between currency symbol and amount
+                              '$currencySymbol $amount',
                               style: const TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w500,
@@ -980,14 +904,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   color: Colors.grey.shade500,
                 ),
               ),
-              const SizedBox(height: 16),
-              Text(
-                'Timeout in 20 seconds...',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey.shade400,
-                ),
-              ),
             ],
           ),
         )
@@ -1063,7 +979,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Upload Receipt Button (Second) - Now shows dialog
+                  // Upload Receipt Button (Second)
                   OutlinedButton(
                     onPressed: _isUploading ? null : _showUploadDialog,
                     style: OutlinedButton.styleFrom(

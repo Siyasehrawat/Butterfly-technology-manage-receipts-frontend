@@ -5,6 +5,7 @@ import 'sign_in_screen.dart';
 import '../widgets/app_logo.dart';
 import '../widgets/curved_background.dart';
 import '../services/auth_service.dart';
+import '../services/currency_service.dart';
 import '../providers/user_provider.dart';
 import '../providers/setting_provider.dart';
 import '../widgets/terms_and_conditions_dialog.dart';
@@ -24,9 +25,11 @@ class _SignUpScreenState extends State<SignUpScreen> {
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _confirmPasswordController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
   final AuthService _authService = AuthService();
   bool _obscurePassword = true;
+  bool _obscureConfirmPassword = true;
   bool _isLoading = false;
   bool _termsAccepted = false;
   String? _errorMessage;
@@ -46,6 +49,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
     _nameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
+    _confirmPasswordController.dispose();
     super.dispose();
   }
 
@@ -107,6 +111,13 @@ class _SignUpScreenState extends State<SignUpScreen> {
       return;
     }
 
+    if (_passwordController.text != _confirmPasswordController.text) {
+      setState(() {
+        _errorMessage = 'Passwords do not match.';
+      });
+      return;
+    }
+
     if (_formKey.currentState!.validate()) {
       setState(() {
         _isLoading = true;
@@ -127,23 +138,33 @@ class _SignUpScreenState extends State<SignUpScreen> {
           final userProvider = Provider.of<UserProvider>(context, listen: false);
           final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
 
+          // Get currency info from selected country if not provided by backend
+          final countryName = result['country'] ?? _selectedCountry?.name;
+          final currencyInfo = CurrencyService.getCurrencyForCountry(countryName ?? '');
+
+          final finalCurrency = result['currency'] ?? currencyInfo['currency'];
+          final finalCurrencySymbol = result['currencySymbol'] ?? currencyInfo['symbol'];
+
+          print('SignUp - Country: $countryName');
+          print('SignUp - Currency: $finalCurrency ($finalCurrencySymbol)');
+
           userProvider.login(
             result['userId'],
             _nameController.text,
             _emailController.text.trim(),
             result['token'] ?? '',
-            currency: result['currency'] ?? _selectedCountry?.currency,
-            currencySymbol: result['currencySymbol'] ?? _selectedCountry?.currencySymbol,
+            country: countryName,
+            currency: finalCurrency,
+            currencySymbol: finalCurrencySymbol,
           );
 
           // Store the country and currency from backend response
-          await userProvider.setCountry(result['country'] ?? _selectedCountry?.name ?? 'Not specified');
+          await userProvider.setCountry(countryName ?? 'Not specified');
+          print('SignUp - Country set to: $countryName');
 
           // Set currency in settings provider from backend response
-          if (result['currencySymbol'] != null) {
-            await settingsProvider.setCurrencySymbol(result['currencySymbol']);
-          } else if (_selectedCountry?.currencySymbol != null) {
-            await settingsProvider.setCurrencySymbol(_selectedCountry!.currencySymbol);
+          if (finalCurrencySymbol != null) {
+            await settingsProvider.setCurrencySymbol(finalCurrencySymbol);
           }
 
           if (mounted) {
@@ -318,10 +339,18 @@ class _SignUpScreenState extends State<SignUpScreen> {
                                     ),
                                   ),
                                   items: _countries.map((Country country) {
+                                    // Get currency info for display
+                                    final currencyInfo = CurrencyService.getCurrencyForCountry(country.name);
+                                    final displaySymbol = country.currencySymbol.isNotEmpty
+                                        ? country.currencySymbol
+                                        : currencyInfo['symbol'];
+                                    final displayCurrency = country.currency.isNotEmpty
+                                        ? country.currency
+                                        : currencyInfo['currency'];
+
                                     return DropdownMenuItem<Country>(
                                       value: country,
-                                      child: Text(
-                                          '${country.name} (${country.currencySymbol} ${country.currency})'),
+                                      child: Text('${country.name} ($displaySymbol $displayCurrency)'),
                                     );
                                   }).toList(),
                                   onChanged: (Country? newValue) {
@@ -372,6 +401,40 @@ class _SignUpScreenState extends State<SignUpScreen> {
                                     }
                                     if (!RegExp(r'[!@#$%^&*(),.?":{}|<>]').hasMatch(value)) {
                                       return 'Password must contain at least one special character';
+                                    }
+                                    return null;
+                                  },
+                                ),
+                                const SizedBox(height: 16),
+                                TextFormField(
+                                  controller: _confirmPasswordController,
+                                  obscureText: _obscureConfirmPassword,
+                                  decoration: InputDecoration(
+                                    hintText: 'Confirm Password',
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                      vertical: 16,
+                                    ),
+                                    suffixIcon: IconButton(
+                                      icon: Icon(
+                                        _obscureConfirmPassword
+                                            ? Icons.visibility_outlined
+                                            : Icons.visibility_off_outlined,
+                                        color: const Color(0xFF7E5EFD),
+                                      ),
+                                      onPressed: () {
+                                        setState(() {
+                                          _obscureConfirmPassword = !_obscureConfirmPassword;
+                                        });
+                                      },
+                                    ),
+                                  ),
+                                  validator: (value) {
+                                    if (value == null || value.isEmpty) {
+                                      return 'Please confirm your password';
+                                    }
+                                    if (value != _passwordController.text) {
+                                      return 'Passwords do not match';
                                     }
                                     return null;
                                   },
