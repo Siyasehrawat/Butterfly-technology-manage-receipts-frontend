@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import '../services/api_service_bypass.dart';
 
 class AdminAnalyticsScreen extends StatefulWidget {
   final String adminId;
@@ -34,16 +36,9 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
     });
 
     try {
-      final url = Uri.parse(
-          'https://manage-receipt-backend-bnl1.onrender.com/api/admin/analytics');
-
-      final response = await http.get(
-        url,
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Content-Type': 'application/json',
-        },
-      );
+      final url = Uri.parse('${dotenv.env['API_BASE_URL']}/api/admin/analytics');
+      final headers = await ApiService.getHeaders(token: widget.token);
+      final response = await http.get(url, headers: headers);
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -53,8 +48,7 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
         });
       } else {
         setState(() {
-          _errorMessage =
-              'Failed to load analytics data: ${response.statusCode}';
+          _errorMessage = 'Failed to load analytics data: ${response.statusCode}';
           _isLoading = false;
         });
       }
@@ -77,60 +71,60 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
       ),
       body: _isLoading
           ? const Center(
-              child: CircularProgressIndicator(
-                color: Color(0xFF7E5EFD),
-              ),
-            )
+        child: CircularProgressIndicator(
+          color: Color(0xFF7E5EFD),
+        ),
+      )
           : _errorMessage != null
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.error_outline,
-                        size: 64,
-                        color: Colors.grey.shade400,
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        _errorMessage!,
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: Colors.grey.shade600,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 16),
-                      ElevatedButton(
-                        onPressed: _fetchAnalyticsData,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF7E5EFD),
-                        ),
-                        child: const Text('Retry'),
-                      ),
-                    ],
-                  ),
-                )
-              : RefreshIndicator(
-                  onRefresh: _fetchAnalyticsData,
-                  color: const Color(0xFF7E5EFD),
-                  child: SingleChildScrollView(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Overview Cards
-                        _buildOverviewSection(),
-                        const SizedBox(height: 24),
-
-                        // Category Distribution Section
-                        _buildCategoryDistributionSection(),
-                        const SizedBox(height: 24),
-                      ],
-                    ),
-                  ),
-                ),
+          ? Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.error_outline,
+              size: 64,
+              color: Colors.grey.shade400,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              _errorMessage!,
+              style: TextStyle(
+                fontSize: 16,
+                color: Colors.grey.shade600,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _fetchAnalyticsData,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF7E5EFD),
+              ),
+              child: const Text('Retry'),
+            ),
+          ],
+        ),
+      )
+          : RefreshIndicator(
+        onRefresh: _fetchAnalyticsData,
+        color: const Color(0xFF7E5EFD),
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildOverviewSection(),
+              const SizedBox(height: 24),
+              _buildTimeSeriesSection(),
+              const SizedBox(height: 24),
+              _buildCategoryDistributionSection(),
+              const SizedBox(height: 24),
+              _buildUserActivitySection(),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -194,6 +188,60 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
     );
   }
 
+  Widget _buildTimeSeriesSection() {
+    final timeSeriesData = _analyticsData['timeSeriesData'] as List<dynamic>? ?? [];
+
+    return _buildAnalyticsCard(
+      'Receipt Activity Over Time',
+      Column(
+        children: [
+          if (timeSeriesData.isEmpty)
+            const Center(
+              child: Text('No time series data available'),
+            )
+          else
+            ...timeSeriesData.map<Widget>((dataPoint) {
+              final date = dataPoint['date']?.toString() ?? 'Unknown Date';
+              final value = dataPoint['value']?.toString() ?? '0';
+
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      flex: 2,
+                      child: Text(
+                        date,
+                        style: const TextStyle(fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                    Expanded(
+                      flex: 1,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF0EAFF),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          '$value receipts',
+                          style: const TextStyle(
+                            color: Color(0xFF7E5EFD),
+                            fontWeight: FontWeight.bold,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
+        ],
+      ),
+    );
+  }
+
   Widget _buildCategoryDistributionSection() {
     final categories = _analyticsData['categoryData'] as List<dynamic>? ?? [];
 
@@ -207,8 +255,8 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
             )
           else
             ...categories.map<Widget>((category) {
-              final name = category['name'] as String;
-              final count = category['count'] as int;
+              final name = category['name']?.toString() ?? 'Uncategorized';
+              final count = category['count']?.toString() ?? '0';
 
               return Padding(
                 padding: const EdgeInsets.only(bottom: 12),
@@ -216,11 +264,28 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
                   children: [
                     Expanded(
                       flex: 3,
-                      child: Text(name),
+                      child: Text(
+                        name,
+                        style: const TextStyle(fontWeight: FontWeight.w500),
+                      ),
                     ),
                     Expanded(
                       flex: 2,
-                      child: Text('$count receipts'),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF0EAFF),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          '$count receipts',
+                          style: const TextStyle(
+                            color: Color(0xFF7E5EFD),
+                            fontWeight: FontWeight.bold,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -231,8 +296,65 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
     );
   }
 
-  Widget _buildMetricCard(
-      String title, String value, IconData icon, Color color) {
+  Widget _buildUserActivitySection() {
+    final userActivity = _analyticsData['userActivityData'] as List<dynamic>? ?? [];
+
+    return _buildAnalyticsCard(
+      'User Activity Status',
+      Column(
+        children: [
+          if (userActivity.isEmpty)
+            const Center(
+              child: Text('No user activity data available'),
+            )
+          else
+            ...userActivity.map<Widget>((activity) {
+              final status = activity['status']?.toString() ?? 'Unknown';
+              final count = activity['count']?.toString() ?? '0';
+
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: Text(
+                        status,
+                        style: const TextStyle(fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                    Expanded(
+                      flex: 2,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: status.toLowerCase().contains('active')
+                              ? Colors.green.shade100
+                              : Colors.red.shade100,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          '$count users',
+                          style: TextStyle(
+                            color: status.toLowerCase().contains('active')
+                                ? Colors.green.shade800
+                                : Colors.red.shade800,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMetricCard(String title, String value, IconData icon, Color color) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -311,5 +433,4 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
       ),
     );
   }
-
 }

@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'dart:convert'; // For jsonEncode and jsonDecode
 import 'package:http/http.dart' as http; // For HTTP requests
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../widgets/curved_background.dart';
+import '../services/version_service.dart'; // Add this import
+import 'package:provider/provider.dart';
+import '../providers/user_provider.dart';
 
 class UpdatePasswordScreen extends StatefulWidget {
   final String userId; // Add userId field
@@ -31,6 +35,14 @@ class _UpdatePasswordScreenState extends State<UpdatePasswordScreen> {
     super.dispose();
   }
 
+  // Get headers with version and platform information
+  Future<Map<String, String>> _getHeaders() async {
+    if (!VersionService.isInitialized) {
+      await VersionService.initialize();
+    }
+    return VersionService.getHeaders();
+  }
+
   Future<void> _updatePassword() async {
     if (_formKey.currentState!.validate()) {
       setState(() {
@@ -42,7 +54,7 @@ class _UpdatePasswordScreenState extends State<UpdatePasswordScreen> {
       final newPassword = _newPasswordController.text;
 
       final url = Uri.parse(
-          'https://manage-receipt-backend-bnl1.onrender.com/api/users/update-password');
+          '${dotenv.env['API_BASE_URL']}/api/users/update-password');
       try {
         final body = jsonEncode({
           'userId': userId,
@@ -50,9 +62,13 @@ class _UpdatePasswordScreenState extends State<UpdatePasswordScreen> {
           'newPassword': newPassword,
         });
 
+        // Get headers with version and platform information
+        final headers = await _getHeaders();
+        headers['Content-Type'] = 'application/json';
+
         final response = await http.post(
           url,
-          headers: {'Content-Type': 'application/json'},
+          headers: headers, // Use headers with version/platform info
           body: body,
         );
 
@@ -91,6 +107,21 @@ class _UpdatePasswordScreenState extends State<UpdatePasswordScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final canUpdatePassword = context.read<UserProvider>().canUpdatePassword;
+    if (!canUpdatePassword) {
+      // Prevent access if disabled
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Password updates are disabled for your account.'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+          Navigator.pop(context);
+        }
+      });
+    }
     return Scaffold(
       body: CurvedBackground(
         child: Column(

@@ -4,18 +4,47 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'package:logger/logger.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'auth_manager.dart';
 import 'currency_service.dart';
+import 'fcm_service.dart';
+import 'notification_service.dart';
 
 class AuthService {
   final Logger _logger = Logger();
   final AuthManager _authManager = AuthManager();
+  
+  // Get base URL from environment with fallback
+  static String get baseUrl {
+    final envBase = dotenv.env['API_BASE_URL'];
+    final resolvedBase = (envBase != null && envBase.isNotEmpty)
+        ? envBase
+        : 'https://manage-receipt-backend-1.onrender.com';
+    if (envBase == null || envBase.isEmpty) {
+      Logger().w('⚠️ API_BASE_URL missing in .env. Falling back to $resolvedBase');
+    }
+    return '$resolvedBase/api';
+  }
+
+  // (Facebook removed)
+
+  static const String _appleClientId = String.fromEnvironment(
+      'APPLE_CLIENT_ID',
+      defaultValue: 'com.ButterflyTchnology.ReceiptManagerapp'); // Service ID used as client_id on web
+  static const String _appleRedirectUri = String.fromEnvironment(
+      'APPLE_REDIRECT_URI',
+      defaultValue:
+      'https://managereceipt.com/web-app/apple-callback'); // must be allowed in Apple settings
 
   AuthService() {
     _logger.i(
         'AuthService initialized for platform: ${kIsWeb ? 'Web' : Platform.operatingSystem}');
-  }
 
+    // Facebook SDK initialization removed
+  }
   // Regular email/password signup
   Future<Map<String, dynamic>> signUp({
     required String name,
@@ -35,7 +64,7 @@ class AuthService {
       }
 
       final response = await http.post(
-        Uri.parse("https://manage-receipt-backend-bnl1.onrender.com/api/users/signup"),
+        Uri.parse("$baseUrl/users/signup"),
         headers: {
           "Content-Type": "application/json",
           "Accept": "application/json",
@@ -72,7 +101,22 @@ class AuthService {
             email: email,
             name: name,
             country: userCountry,
+            canUpdatePassword: responseData['canUpdatePassword'] ?? responseData['canupdatepassword'],
           );
+
+          // Also cache username redundantly in SharedPreferences for faster boot retrieval
+          try {
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString('user_name_$userId', name);
+            await prefs.setString('cached_username', name);
+          } catch (_) {}
+
+          // Initialize FCM for new user
+          if (!kIsWeb) {
+            FCMService.setCurrentUserId(userId);
+            await NotificationService.onUserLogin(userId);
+          }
+
           _logger.i('Auth data saved with country: $userCountry, currency: $userCurrency, symbol: $userCurrencySymbol');
         }
 
@@ -83,6 +127,8 @@ class AuthService {
           'currency': userCurrency,
           'currencySymbol': userCurrencySymbol,
           'country': userCountry,
+          // Force true for email/password signups so we don't block on profile completion
+          'canUpdatePassword': responseData['canUpdatePassword'] ?? responseData['canupdatepassword'],
           'message': 'Signup successful'
         };
       } else {
@@ -137,7 +183,7 @@ class AuthService {
 
       try {
         final pingResponse = await http.get(
-          Uri.parse("https://manage-receipt-backend-bnl1.onrender.com/health"),
+          Uri.parse("${dotenv.env['API_BASE_URL']}/health"),
           headers: {"Accept": "application/json"},
         ).timeout(const Duration(seconds: 5));
 
@@ -147,7 +193,7 @@ class AuthService {
       }
 
       final response = await http.post(
-        Uri.parse("https://manage-receipt-backend-bnl1.onrender.com/api/users/login"),
+        Uri.parse("$baseUrl/users/login"),
         headers: {
           "Content-Type": "application/json",
           "Accept": "application/json",
@@ -208,7 +254,14 @@ class AuthService {
                 hasAdminAccess: hasAdminAccess,
                 name: responseData['user']?['name'],
                 country: country,
+                canUpdatePassword: responseData['canUpdatePassword'] ?? responseData['canupdatepassword'],
               );
+
+              // Initialize FCM after successful login
+              if (!kIsWeb) {
+                FCMService.setCurrentUserId(userId);
+                await NotificationService.onUserLogin(userId);
+              }
 
               return {
                 'success': true,
@@ -219,6 +272,8 @@ class AuthService {
                 'currencySymbol': finalCurrencySymbol,
                 'country': country,
                 'name': responseData['user']?['name'],
+              // Include canUpdatePassword from login response if present
+              'canUpdatePassword': responseData['canUpdatePassword'] ?? responseData['canupdatepassword'],
                 'message': 'Login successful'
               };
             } else {
@@ -276,7 +331,7 @@ class AuthService {
     required String newPassword,
   }) async {
     final url =
-    Uri.parse('https://manage-receipt-backend-bnl1.onrender.com/api/users/update-password');
+    Uri.parse('$baseUrl/users/update-password');
     try {
       _logger.i('Sending password update request for user ID: $userId');
 
@@ -310,6 +365,12 @@ class AuthService {
   Future<void> signOut() async {
     try {
       _logger.i('Starting sign out process');
+
+      // Clear FCM data before clearing auth data
+      if (!kIsWeb) {
+        FCMService.clearCurrentUser();
+      }
+
       await _authManager.clearAuthData();
       _logger.i('Cleared stored authentication data');
       _logger.i('Successfully signed out');
@@ -323,7 +384,7 @@ class AuthService {
     try {
       final response = await http
           .get(
-        Uri.parse("https://manage-receipt-backend-bnl1.onrender.com/health"),
+        Uri.parse("${dotenv.env['API_BASE_URL']}/health"),
       )
           .timeout(const Duration(seconds: 5));
 
@@ -349,14 +410,229 @@ class AuthService {
     return await _authManager.getUserCountry();
   }
 
-  // Placeholder methods for social login
-  Future<Map<String, dynamic>> signInWithGoogle(
-      {bool termsAccepted = true}) async {
-    return {'success': false, 'message': 'Social login is currently disabled'};
+  // Social login - Google
+  Future<Map<String, dynamic>> signInWithGoogle({bool termsAccepted = true, String? name, String? country}) async {
+    try {
+      if (!termsAccepted) {
+        return {'success': false, 'message': 'You must accept the Terms and Conditions to continue.'};
+      }
+
+      final GoogleSignIn googleSignIn = kIsWeb
+          ? GoogleSignIn(
+              scopes: const ['openid', 'email', 'profile'],
+              // On web, use clientId not serverClientId
+              clientId:
+                  '964886436743-tj9r29rfqir0781h9p54vv3abbh28h4e.apps.googleusercontent.com',
+            )
+          : GoogleSignIn(
+              scopes: const ['email', 'profile'],
+              // On mobile, set serverClientId so an ID token is issued for backend
+              serverClientId:  Platform.isIOS
+                 ? '964886436743-3vtji86ff4kql2n780l3u7ht8gloi9rl.apps.googleusercontent.com'
+                 : null,
+
+              clientId: Platform.isIOS
+                  ? '964886436743-3vtji86ff4kql2n780l3u7ht8gloi9rl.apps.googleusercontent.com'
+                  : null,
+
+            );
+
+      GoogleSignInAccount? account;
+      if (kIsWeb) {
+        // Preferred web flow: attempt a silent sign-in, then fall back to an interactive popup.
+        account = await googleSignIn.signInSilently();
+        account ??= await googleSignIn.signIn();
+      } else {
+        // On Android, explicitly sign out/disconnect to force the account chooser UI
+        if (Platform.isAndroid) {
+          try { await googleSignIn.signOut(); } catch (_) {}
+          try { await googleSignIn.disconnect(); } catch (_) {}
+        }
+        account = await googleSignIn.signIn();
+      }
+      if (account == null) {
+        return {'success': false, 'message': 'Google sign-in was cancelled'};
+      }
+
+      final GoogleSignInAuthentication auth = await account.authentication;
+      final String? idToken = auth.idToken;
+      if (idToken == null) {
+        return {'success': false, 'message': 'Failed to obtain Google ID token'};
+      }
+
+      final Map<String, dynamic> payload = {
+        "token": idToken,
+        "termsAccepted": termsAccepted,
+      };
+      if (name != null && name.isNotEmpty) {
+        payload["name"] = name;
+      }
+      if (country != null && country.isNotEmpty) {
+        payload["country"] = country;
+      }
+
+      final response = await http.post(
+        Uri.parse('$baseUrl/users/auth/google-signup'),
+        headers: {"Content-Type": "application/json", "Accept": "application/json"},
+        body: jsonEncode(payload),
+      );
+
+      return await _handleSocialResponse(response, fallbackEmail: account.email, fallbackName: account.displayName);
+    } catch (e) {
+      _logger.e('Google sign-in error: $e');
+      return {'success': false, 'message': 'Google sign-in failed. Please try again.'};
+    }
   }
 
-  Future<Map<String, dynamic>> signInWithFacebook(
-      {bool termsAccepted = true}) async {
-    return {'success': false, 'message': 'Social login is currently disabled'};
+  // (Facebook sign-in removed)
+
+  // Social login - Apple
+  Future<Map<String, dynamic>> signInWithApple({bool termsAccepted = true, String? name, String? country}) async {
+    try {
+      if (!termsAccepted) {
+        return {'success': false, 'message': 'You must accept the Terms and Conditions to continue.'};
+      }
+
+      final AuthorizationCredentialAppleID credential = await SignInWithApple.getAppleIDCredential(
+        scopes: const [AppleIDAuthorizationScopes.email, AppleIDAuthorizationScopes.fullName],
+        // On Web and Android you MUST provide these options (Android uses web flow)
+        webAuthenticationOptions: (kIsWeb || Platform.isAndroid)
+            ? WebAuthenticationOptions(
+          clientId: _appleClientId,
+          redirectUri: Uri.parse(_appleRedirectUri),
+        )
+            : null,
+      );
+
+      // Apple only returns name/email on the very first auth. Capture and forward if present.
+      final String combinedAppleName = [credential.givenName, credential.familyName]
+          .where((p) => p != null && p!.trim().isNotEmpty)
+          .map((p) => p!.trim())
+          .join(' ');
+      final String? appleEmail = (credential.email != null && credential.email!.trim().isNotEmpty)
+          ? credential.email!.trim()
+          : null;
+
+      final String? idToken = credential.identityToken;
+      if (idToken == null) {
+        return {'success': false, 'message': 'Failed to obtain Apple ID token'};
+      }
+
+      final Map<String, dynamic> payload = {
+        "idToken": idToken,
+        "termsAccepted": termsAccepted,
+      };
+      // Prefer Apple's provided values when available on first auth
+      if (combinedAppleName.isNotEmpty) {
+        payload["name"] = combinedAppleName;
+      } else if (name != null && name.isNotEmpty) {
+        payload["name"] = name; // optional FE-provided fallback
+      }
+      if (appleEmail != null && appleEmail.isNotEmpty) {
+        payload["email"] = appleEmail;
+      }
+      if (country != null && country.isNotEmpty) {
+        payload["country"] = country;
+      }
+
+      final response = await http.post(
+        Uri.parse('$baseUrl/users/auth/apple-signup'),
+        headers: {"Content-Type": "application/json", "Accept": "application/json"},
+        body: jsonEncode(payload),
+      );
+
+      // Log the final request URL for debugging route mismatches
+      _logger.i('Apple sign-in request url: ${response.request?.url}');
+
+      final fallbackName = combinedAppleName;
+      return await _handleSocialResponse(response, fallbackEmail: appleEmail, fallbackName: fallbackName.isEmpty ? null : fallbackName);
+    } catch (e) {
+      _logger.e('Apple sign-in error: $e');
+      return {'success': false, 'message': 'Apple sign-in failed. Please try again.'};
+    }
+  }
+
+  Future<Map<String, dynamic>> _handleSocialResponse(http.Response response, {String? fallbackEmail, String? fallbackName}) async {
+    try {
+      _logger.i('Social login response status: ${response.statusCode}');
+      _logger.i('Social login request url: ${response.request?.url}');
+      _logger.i('Social login response body: ${response.body}');
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final Map<String, dynamic> data = json.decode(response.body);
+        final String? token = data['token'];
+        final dynamic user = data['user'];
+        final String? userId = user?['id']?.toString() ?? data['userId']?.toString();
+        // Prefer backend email; otherwise use provider fallback; otherwise use any previously stored email
+        String? email = user?['email'] ?? data['email'] ?? fallbackEmail;
+        if (email == null || email.isEmpty) {
+          try {
+            final storedEmail = await _authManager.getUserEmail();
+            if (storedEmail != null && storedEmail.isNotEmpty) {
+              email = storedEmail;
+            }
+          } catch (_) {}
+        }
+        final String? name = user?['name'] ?? data['name'] ?? fallbackName;
+        final String? country = user?['country'] ?? data['country'];
+
+        // Check for admin access from screens array or user role
+        final List<dynamic> screens = data['screens'] ?? [];
+        final String? userRole = user?['role'];
+        final bool hasAdminAccess = screens.contains('AdminPanel') || userRole == 'admin';
+
+        // Map country to currency if provided
+        Map<String, String> currencyInfo = {'currency': 'USD', 'symbol': '\$'};
+        if (country != null && country.isNotEmpty) {
+          currencyInfo = CurrencyService.getCurrencyForCountry(country);
+        }
+        final String? currency = data['user']?['currency'] ?? data['currency'] ?? currencyInfo['currency'];
+        final String? currencySymbol = data['user']?['currencySymbol'] ?? data['currencySymbol'] ?? currencyInfo['symbol'];
+
+        if (token != null && userId != null && email != null) {
+          await _authManager.saveAuthData(
+            token: token,
+            userId: userId,
+            email: email,
+            name: name,
+            country: country,
+            hasAdminAccess: hasAdminAccess,
+            canUpdatePassword: data['canUpdatePassword'] ?? data['canupdatepassword'],
+          );
+
+          if (!kIsWeb) {
+            FCMService.setCurrentUserId(userId);
+            await NotificationService.onUserLogin(userId);
+          }
+
+          return {
+            'success': true,
+            'userId': userId,
+            'token': token,
+            'hasAdminAccess': hasAdminAccess,
+            'currency': currency,
+            'currencySymbol': currencySymbol,
+            'country': country,
+            'name': name,
+            // Normalize flag for social flows
+            'canUpdatePassword': data['canUpdatePassword'] ?? data['canupdatepassword'],
+            'needsProfile': data['needsProfile'] ?? false, // Default to false if not provided
+          };
+        }
+
+        return {'success': false, 'message': 'Invalid response from server'};
+      } else {
+        String message = 'Social login failed';
+        try {
+          final body = json.decode(response.body);
+          message = body['message'] ?? body['error'] ?? message;
+        } catch (_) {}
+        return {'success': false, 'message': message};
+      }
+    } catch (e) {
+      _logger.e('Error handling social response: $e');
+      return {'success': false, 'message': 'Social login failed'};
+    }
   }
 }
+

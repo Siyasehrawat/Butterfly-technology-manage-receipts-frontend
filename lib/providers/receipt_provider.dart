@@ -17,7 +17,7 @@ class ReceiptProvider with ChangeNotifier {
 
   List<Map<String, dynamic>> _receipts = [];
   Map<String, dynamic>? _currentReceipt;
-  final Map<String, dynamic> _filters = {};
+  final Map<String, dynamic> _filters = {}; // This will now include 'tags'
   bool _isLoading = false;
   String _errorMessage = '';
   String _userId = '';
@@ -58,6 +58,9 @@ class ReceiptProvider with ChangeNotifier {
         toDate: _filters['toDate'],
         minAmount: _filters['minAmount'],
         maxAmount: _filters['maxAmount'],
+        tags: _filters['tags'], // NEW: Pass tags filter
+        isSplit: _filters['isSplit'], // NEW: Pass isSplit filter
+        splitStatus: _filters['splitStatus'], // NEW: Pass splitStatus filter
       );
       _isLoading = false;
       notifyListeners();
@@ -76,8 +79,14 @@ class ReceiptProvider with ChangeNotifier {
 
   // Update filter
   void updateFilter(String key, dynamic value) {
-    filters[key] = value;
+    // Handle lists (like tags or categoryIds) specifically
+    if (value == null || (value is String && value.isEmpty) || (value is List && value.isEmpty)) {
+      _filters.remove(key);
+    } else {
+      _filters[key] = value;
+    }
     notifyListeners();
+    debugPrint('ReceiptProvider filters updated: $_filters');
   }
 
   void clearFilters() {
@@ -178,9 +187,14 @@ class ReceiptProvider with ChangeNotifier {
     return await _receiptService.getMerchants();
   }
 
+  // NEW: Get tags
+  Future<List<String>> getTags() async {
+    return await _receiptService.getTags(userId: _userId); // Pass userId to getTags
+  }
+
   // Upload and process receipt image
   Future<Map<String, dynamic>?> uploadAndProcessReceipt(
-      ImageSource source) async {
+      ImageSource source, {String? country}) async {
     _isLoading = true;
     _errorMessage = '';
     notifyListeners();
@@ -205,8 +219,11 @@ class ReceiptProvider with ChangeNotifier {
         return null;
       }
 
-      final receiptData =
-      await _receiptService.processReceiptImage(imageUrl, _userId);
+      final receiptData = await _receiptService.processReceiptImage(
+        imageUrl, 
+        _userId, 
+        country: country,
+      );
       _isLoading = false;
 
       if (receiptData != null) {

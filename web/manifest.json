@@ -1,11 +1,11 @@
 {
-    "name": "Manage_Receipt",
-    "short_name": "Manage_Receipt",
+    "name": "Manage Receipt",
+    "short_name": "Manage Receipt",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "AI Receipt Scanner & Expense Tracker - Smart, fast & free expense management",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'verify_otp_screen.dart';
 import 'package:logger/logger.dart';
 import '../widgets/curved_background.dart';
@@ -37,7 +38,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       try {
         final response = await http.post(
           Uri.parse(
-              "https://manage-receipt-backend-bnl1.onrender.com/api/users/forgot-password"),
+              "${dotenv.env['API_BASE_URL']}/api/users/forgot-password"),
           headers: {"Content-Type": "application/json"},
           body: jsonEncode({"email": _emailController.text}),
         );

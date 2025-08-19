@@ -1,12 +1,11 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'package:provider/provider.dart';
 import '../widgets/curved_background.dart';
+import '../providers/user_provider.dart';
+import '../services/api_service_bypass.dart';
 import 'admin_analytics_screen.dart';
 import 'admin_users_screen.dart';
-import 'admin_receipts_screen.dart';
-import 'admin_settings_screen.dart';
-import 'admin_reports_screen.dart';
 import 'dashboard_screen.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
@@ -35,6 +34,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     _fetchDashboardData();
   }
 
+  // UPDATED: Now uses ApiService with proper headers
   Future<void> _fetchDashboardData() async {
     setState(() {
       _isLoading = true;
@@ -42,16 +42,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     });
 
     try {
-      final url = Uri.parse(
-          'https://manage-receipt-backend-bnl1.onrender.com/api/admin/summary');
-
-      final response = await http.get(
-        url,
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Content-Type': 'application/json',
-        },
-      );
+      // UPDATED: Using ApiService instead of direct HTTP call
+      final response = await ApiService.get('/admin/summary', token: widget.token);
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -87,18 +79,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     );
   }
 
-  void _navigateToReceiptsScreen() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => AdminReceiptsScreen(
-          adminId: widget.adminId,
-          token: widget.token,
-        ),
-      ),
-    );
-  }
-
   void _navigateToAnalyticsScreen() {
     Navigator.push(
       context,
@@ -111,28 +91,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     );
   }
 
-  void _navigateToReportsScreen() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => AdminReportsScreen(
-          adminId: widget.adminId,
-          token: widget.token,
-        ),
-      ),
-    );
-  }
-
-  void _navigateToSettingsScreen() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => AdminSettingsScreen(
-          adminId: widget.adminId,
-          token: widget.token,
-        ),
-      ),
-    );
+  void _navigateToMrBucksAdmin() {
+    Navigator.pushNamed(context, '/mr_bucks_admin');
   }
 
   @override
@@ -227,94 +187,123 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                     ],
                   ),
                 )
-                    : SingleChildScrollView(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Welcome message
-                      const Text(
-                        'Welcome, Admin!',
-                        style: TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
+                    : RefreshIndicator(
+                  onRefresh: _fetchDashboardData,
+                  color: Colors.white,
+                  child: SingleChildScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Welcome message
+                        const Text(
+                          'Welcome, Admin!',
+                          style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        'Here\'s an overview of your application',
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: Colors.white,
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Here\'s an overview of your application',
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: Colors.white,
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 24),
+                        const SizedBox(height: 24),
 
-                      // User Stats Row
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildStatCard(
-                              'Total Users',
-                              _dashboardData['totalUsers']
-                                  ?.toString() ??
-                                  '0',
-                              Icons.people,
-                              Colors.blue,
+                        // User Stats Row
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildStatCard(
+                                'Total Users',
+                                _dashboardData['totalUsers']
+                                    ?.toString() ??
+                                    '0',
+                                Icons.people,
+                                Colors.blue,
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: _buildStatCard(
-                              'Active Users',
-                              _dashboardData['activeUsers']
-                                  ?.toString() ??
-                                  '0',
-                              Icons.person_outline,
-                              Colors.green,
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: _buildStatCard(
+                                'Active Users',
+                                _dashboardData['activeUsers']
+                                    ?.toString() ??
+                                    '0',
+                                Icons.person_outline,
+                                Colors.green,
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
 
-                      // Receipt Stats Row
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildStatCard(
-                              'Total Receipts',
-                              _dashboardData['totalReceipts']
-                                  ?.toString() ??
-                                  '0',
-                              Icons.receipt_long,
-                              Colors.orange,
+                        // Receipt Stats Row
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildStatCard(
+                                'Total Receipts',
+                                _dashboardData['totalReceipts']
+                                    ?.toString() ??
+                                    '0',
+                                Icons.receipt_long,
+                                Colors.orange,
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: _buildStatCard(
-                              'New Users (7d)',
-                              _dashboardData['newUsersLast7Days']
-                                  ?.toString() ??
-                                  '0',
-                              Icons.person_add,
-                              Colors.purple,
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: _buildStatCard(
+                                'New Users (7d)',
+                                _dashboardData['newUsersLast7Days']
+                                    ?.toString() ??
+                                    '0',
+                                Icons.person_add,
+                                Colors.purple,
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 24),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
 
-                      // Recent Activity Section
-                      _buildRecentActivitySection(),
-                      const SizedBox(height: 24),
+                        // Additional Stats Row
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildStatCard(
+                                'New Receipts (7d)',
+                                _dashboardData['newReceiptsLast7Days']
+                                    ?.toString() ??
+                                    '0',
+                                Icons.receipt_outlined,
+                                Colors.teal,
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: _buildStatCard(
+                                'Avg Receipts/User',
+                                _dashboardData['averageReceiptsPerUser']
+                                    ?.toString() ??
+                                    '0',
+                                Icons.analytics,
+                                Colors.indigo,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 24),
 
-                      // Quick Actions Section
-                      _buildQuickActionsSection(),
-                      const SizedBox(height: 16),
-                    ],
+                        // Recent Activity Section
+                        _buildRecentActivitySection(),
+                        const SizedBox(height: 16),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -409,7 +398,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           const Divider(),
           _buildActivityItem(
             'New Receipts',
-            '${_dashboardData['receiptsLast7Days'] ?? 0} new receipts in the last 7 days',
+            '${_dashboardData['newReceiptsLast7Days'] ?? 0} new receipts in the last 7 days',
             Icons.receipt,
             Colors.blue,
           ),
@@ -420,160 +409,60 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             Icons.analytics,
             Colors.orange,
           ),
+          const Divider(),
+          _buildActivityItem(
+            'MR Bucks Admin',
+            'Manage points and redemptions',
+            Icons.card_giftcard,
+            const Color(0xFF7E5EFD),
+            onTap: _navigateToMrBucksAdmin,
+          ),
+
         ],
       ),
     );
   }
 
   Widget _buildActivityItem(
-      String title, String subtitle, IconData icon, Color color) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(icon, color: color, size: 24),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                Text(
-                  subtitle,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Colors.grey.shade600,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildQuickActionsSection() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 10,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Quick Actions',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildActionButton(
-                  'Manage Users',
-                  Icons.people,
-                  _navigateToUsersScreen,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildActionButton(
-                  'View Receipts',
-                  Icons.receipt_long,
-                  _navigateToReceiptsScreen,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _buildActionButton(
-                  'Analytics',
-                  Icons.analytics,
-                  _navigateToAnalyticsScreen,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildActionButton(
-                  'Reports',
-                  Icons.assessment,
-                  _navigateToReportsScreen,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _buildActionButton(
-                  'Settings',
-                  Icons.settings,
-                  _navigateToSettingsScreen,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Container(), // Empty space for symmetry
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildActionButton(String title, IconData icon, VoidCallback onTap) {
+      String title, String subtitle, IconData icon, Color color, {VoidCallback? onTap}) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF0EAFF),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Column(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
           children: [
-            Icon(icon, color: const Color(0xFF7E5EFD), size: 28),
-            const SizedBox(height: 8),
-            Text(
-              title,
-              style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-                color: Color(0xFF7E5EFD),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(icon, color: color, size: 24),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ],
               ),
             ),
+            if (onTap != null)
+              Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey.shade400),
           ],
         ),
       ),
@@ -648,14 +537,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             },
           ),
           ListTile(
-            leading: const Icon(Icons.receipt_long),
-            title: const Text('Receipts'),
-            onTap: () {
-              Navigator.pop(context);
-              _navigateToReceiptsScreen();
-            },
-          ),
-          ListTile(
             leading: const Icon(Icons.analytics),
             title: const Text('Analytics'),
             onTap: () {
@@ -664,19 +545,11 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             },
           ),
           ListTile(
-            leading: const Icon(Icons.assessment),
-            title: const Text('Reports'),
+            leading: const Icon(Icons.card_giftcard, color: Color(0xFF7E5EFD)),
+            title: const Text('MR Bucks Admin'),
             onTap: () {
               Navigator.pop(context);
-              _navigateToReportsScreen();
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.settings),
-            title: const Text('Settings'),
-            onTap: () {
-              Navigator.pop(context);
-              _navigateToSettingsScreen();
+              _navigateToMrBucksAdmin();
             },
           ),
           const Divider(),

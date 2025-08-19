@@ -2,7 +2,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:logger/logger.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../widgets/curved_background.dart';
+import '../services/version_service.dart'; // Add this import for version/platform headers
 import 'reset_password_screen.dart'; // Import the ResetPasswordScreen file
 
 class VerifyOtpScreen extends StatefulWidget {
@@ -29,6 +31,14 @@ class _VerifyOtpScreenState extends State<VerifyOtpScreen> {
     super.dispose();
   }
 
+  // Get headers with version and platform information
+  Future<Map<String, String>> _getHeaders() async {
+    if (!VersionService.isInitialized) {
+      await VersionService.initialize();
+    }
+    return VersionService.getHeaders();
+  }
+
   Future<void> _verifyOtp() async {
     if (_formKey.currentState!.validate()) {
       setState(() {
@@ -37,10 +47,14 @@ class _VerifyOtpScreenState extends State<VerifyOtpScreen> {
       });
 
       try {
+        // Get headers with version and platform information
+        final headers = await _getHeaders();
+        headers['Content-Type'] = 'application/json';
+
         final response = await http.post(
           Uri.parse(
-              "https://manage-receipt-backend-bnl1.onrender.com/api/users/verify-otp"),
-          headers: {"Content-Type": "application/json"},
+              "${dotenv.env['API_BASE_URL']}/api/users/verify-otp"),
+          headers: headers, // Use headers with version/platform info
           body: jsonEncode({
             "email": widget.email,
             "otp": _otpController.text,
@@ -148,7 +162,7 @@ class _VerifyOtpScreenState extends State<VerifyOtpScreen> {
             // Main content
             Expanded(
               child: Align(
-              alignment: const Alignment(0, -0.6),
+                alignment: const Alignment(0, -0.6),
                 child: SingleChildScrollView(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 24),

@@ -22,13 +22,25 @@ class _EditDateScreenState extends State<EditDateScreen> {
   void initState() {
     super.initState();
     try {
-      _fromDate = widget.initialValue.isNotEmpty
-          ? _dateFormat.parse(widget.initialValue)
-          : DateTime.now();
+      // Attempt to parse initialValue as a date range if it contains " - "
+      if (widget.initialValue.contains(' - ')) {
+        final parts = widget.initialValue.split(' - ');
+        _fromDate = _dateFormat.parse(parts[0]);
+        _toDate = _dateFormat.parse(parts[1]);
+      } else if (widget.initialValue.isNotEmpty) {
+        // If it's a single date, use it for both from and to
+        _fromDate = _dateFormat.parse(widget.initialValue);
+        _toDate = _fromDate;
+      } else {
+        // Default to today if no initial value
+        _fromDate = DateTime.now();
+        _toDate = DateTime.now();
+      }
     } catch (e) {
+      // Fallback to today if parsing fails
       _fromDate = DateTime.now();
+      _toDate = DateTime.now();
     }
-    _toDate = _fromDate;
   }
 
   @override
@@ -53,7 +65,7 @@ class _EditDateScreenState extends State<EditDateScreen> {
                   const Expanded(
                     child: Center(
                       child: Text(
-                        'Date',
+                        'Date Range', // Changed title to Date Range
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 20,
@@ -100,9 +112,10 @@ class _EditDateScreenState extends State<EditDateScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      const SizedBox(height: 24),
                       // From date section
                       const Text(
-                        'From',
+                        'From Date', // Changed label
                         style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
@@ -124,25 +137,16 @@ class _EditDateScreenState extends State<EditDateScreen> {
                                 _dateFormat.format(_fromDate),
                                 style: const TextStyle(fontSize: 16),
                               ),
-                              const Icon(Icons.keyboard_arrow_down),
+                              const Icon(Icons.calendar_today), // Changed icon to calendar
                             ],
                           ),
                         ),
                       ),
-                      const SizedBox(height: 16),
-
-                      // From date calendar
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 24),
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.grey.shade300),
-                        ),
-                        child: _buildCustomCalendar(true),
-                      ),
+                      const SizedBox(height: 32), // Increased spacing
 
                       // To date section
                       const Text(
-                        'To',
+                        'To Date', // Changed label
                         style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
@@ -164,22 +168,24 @@ class _EditDateScreenState extends State<EditDateScreen> {
                                 _dateFormat.format(_toDate),
                                 style: const TextStyle(fontSize: 16),
                               ),
-                              const Icon(Icons.keyboard_arrow_down),
+                              const Icon(Icons.calendar_today), // Changed icon to calendar
                             ],
                           ),
                         ),
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 32), // Increased spacing
 
-                      // To date calendar
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 24),
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.grey.shade300),
+                      // Display selected range (optional, for visual feedback)
+                      Center(
+                        child: Text(
+                          'Selected Range: ${_dateFormat.format(_fromDate)} - ${_dateFormat.format(_toDate)}',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w500,
+                            color: Color(0xFF7E5EFD),
+                          ),
                         ),
-                        child: _buildCustomCalendar(false),
                       ),
-
                       const SizedBox(height: 32),
 
                       // Save button
@@ -226,43 +232,6 @@ class _EditDateScreenState extends State<EditDateScreen> {
     );
   }
 
-  // Custom calendar widget that highlights the selected date
-  Widget _buildCustomCalendar(bool isFromDate) {
-    return Theme(
-      data: Theme.of(context).copyWith(
-        colorScheme: const ColorScheme.light(
-          primary: Color(0xFF7E5EFD),
-          onPrimary: Colors.white,
-          onSurface: Colors.black,
-        ),
-      ),
-      child: CalendarDatePicker(
-        initialDate: isFromDate ? _fromDate : _toDate,
-        firstDate: DateTime(2000),
-        lastDate: DateTime(2101),
-        onDateChanged: (date) {
-          setState(() {
-            if (isFromDate) {
-              _fromDate = date;
-              if (_toDate.isBefore(_fromDate)) {
-                _toDate = _fromDate;
-              }
-            } else {
-              _toDate = date;
-              if (_fromDate.isAfter(_toDate)) {
-                _fromDate = _toDate;
-              }
-            }
-          });
-        },
-        selectableDayPredicate: (DateTime day) {
-          // Make all days selectable
-          return true;
-        },
-      ),
-    );
-  }
-
   Future<void> _selectDate(BuildContext context, bool isFromDate) async {
     final DateTime? picked = await showDatePicker(
       context: context,
@@ -277,7 +246,6 @@ class _EditDateScreenState extends State<EditDateScreen> {
               onPrimary: Colors.white,
               onSurface: Colors.black,
             ),
-            // Add this to make the selected date visible with a purple background
             textButtonTheme: TextButtonThemeData(
               style: TextButton.styleFrom(
                 foregroundColor: const Color(0xFF7E5EFD),
@@ -293,11 +261,13 @@ class _EditDateScreenState extends State<EditDateScreen> {
       setState(() {
         if (isFromDate) {
           _fromDate = picked;
+          // Ensure toDate is not before fromDate
           if (_toDate.isBefore(_fromDate)) {
             _toDate = _fromDate;
           }
         } else {
           _toDate = picked;
+          // Ensure fromDate is not after toDate
           if (_fromDate.isAfter(_toDate)) {
             _fromDate = _toDate;
           }

@@ -1,0 +1,71 @@
+{
+  "project_info": {
+    "project_number": "964886436743",
+    "project_id": "managereceiptcom",
+    "storage_bucket": "managereceiptcom.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:964886436743:android:006165b5e177d45c5ed122",
+        "android_client_info": {
+          "package_name": "com.ButterflyTchnology.managereceipt"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "964886436743-aiv5nsjq3seo9hv39hmm6s20t21qeiai.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.ButterflyTchnology.managereceipt",
+            "certificate_hash": "6dd1923d9171665e9ba8d6b62996d5f3b1463fd5"
+          }
+        },
+        {
+          "client_id": "964886436743-errntkf7cp1vsid0vnohfv9bgqo7lv2l.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.ButterflyTchnology.managereceipt",
+            "certificate_hash": "89ad212ae32dbd91f13e80f04bca2d669eb39abb"
+          }
+        },
+        {
+          "client_id": "964886436743-t3rjkhtseiant6fvo9qqsda2l3p44uic.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.ButterflyTchnology.managereceipt",
+            "certificate_hash": "d9e17b4513b3e14fbf2654cc30142273bffc60be"
+          }
+        },
+        {
+          "client_id": "964886436743-tj9r29rfqir0781h9p54vv3abbh28h4e.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAGhVo-1LhAzUq3o4hC2P6wE3Ho9IgYnMY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "964886436743-tj9r29rfqir0781h9p54vv3abbh28h4e.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "964886436743-3vtji86ff4kql2n780l3u7ht8gloi9rl.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.ButterflyTchnology.receiptManagertest",
+                "app_store_id": "6746782746"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

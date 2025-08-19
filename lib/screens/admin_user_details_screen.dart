@@ -1,8 +1,8 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import '../widgets/curved_background.dart';
+import '../services/api_service_bypass.dart'; // Import the ApiService
 
 class AdminUserDetailsScreen extends StatefulWidget {
   final String adminId;
@@ -25,43 +25,83 @@ class AdminUserDetailsScreen extends StatefulWidget {
 class _AdminUserDetailsScreenState extends State<AdminUserDetailsScreen> {
   bool _isLoading = true;
   Map<String, dynamic> _userDetails = {};
-  List<Map<String, dynamic>> _userReceipts = [];
+  String? _errorMessage;
 
   @override
   void initState() {
     super.initState();
+    // Set the context for ApiService
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ApiService.setContext(context);
+    });
     _fetchUserDetails();
   }
 
   Future<void> _fetchUserDetails() async {
     setState(() {
       _isLoading = true;
+      _errorMessage = null;
     });
 
     try {
-      final url = Uri.parse(
-          'https://manage-receipt-backend-bnl1.onrender.com/api/admin/users/${widget.userId}');
+      debugPrint('Fetching user details for userId: ${widget.userId}');
 
-      final response = await http.get(
-        url,
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Content-Type': 'application/json',
-        },
+      // Use ApiService instead of direct HTTP call
+      final response = await ApiService.get(
+        '/admin/users/${widget.userId}',
+        token: widget.token,
       );
+
+      debugPrint('User Details - Response status: ${response.statusCode}');
+      debugPrint('User Details - Response body: ${response.body}');
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
+
+        // Handle different response structures
+        Map<String, dynamic>? userInfo = {};
+
+        if (data is List && data.length >= 1) {
+          // If response is array with user data
+          userInfo = data[0] as Map<String, dynamic>? ?? {};
+          debugPrint('User Details - Array format: User info');
+        } else if (data is Map) {
+          // If response is object with user properties
+          userInfo = (data['user'] as Map<String, dynamic>? ?? data).cast<String, dynamic>();
+          debugPrint('User Details - Object format: User info');
+        } else {
+          // Fallback to passed user data
+          userInfo = widget.userData;
+          debugPrint('User Details - Using fallback user data');
+        }
+
+        // Map API response fields to expected field names
+        if (userInfo != null && userInfo.isNotEmpty) {
+          // Map totalReceipts to receiptsCount for consistency
+          if (userInfo.containsKey('totalReceipts') && !userInfo.containsKey('receiptsCount')) {
+            userInfo['receiptsCount'] = userInfo['totalReceipts'];
+          }
+          // Map lastActivity to lastLogin for consistency
+          if (userInfo.containsKey('lastActivity') && !userInfo.containsKey('lastLogin')) {
+            userInfo['lastLogin'] = userInfo['lastActivity'];
+          }
+        }
+
         setState(() {
-          _userDetails = data['user'] ?? {};
-          _userReceipts =
-          List<Map<String, dynamic>>.from(data['receipts'] ?? []);
+          _userDetails = (userInfo!.isNotEmpty ? userInfo : widget.userData)!;
+          _isLoading = false;
+        });
+      } else if (response.statusCode == 404) {
+        // User not found, use passed data
+        setState(() {
+          _userDetails = widget.userData;
+          _errorMessage = 'User details not found on server';
           _isLoading = false;
         });
       } else {
         setState(() {
           _userDetails = widget.userData;
-          _userReceipts = [];
+          _errorMessage = 'Failed to load user details: ${response.statusCode}';
           _isLoading = false;
         });
       }
@@ -69,20 +109,105 @@ class _AdminUserDetailsScreenState extends State<AdminUserDetailsScreen> {
       debugPrint('Error fetching user details: $e');
       setState(() {
         _userDetails = widget.userData;
-        _userReceipts = [];
+        _errorMessage = 'Network error: Unable to connect to server';
         _isLoading = false;
       });
     }
   }
 
+  Future<void> _updateUserDetails(Map<String, dynamic> updatedData) async {
+    try {
+      debugPrint('Updating user details for userId: ${widget.userId}');
+
+      // Use ApiService instead of direct HTTP call
+      final response = await ApiService.put(
+        '/admin/users/${widget.userId}',
+        body: updatedData,
+        token: widget.token,
+      );
+
+      debugPrint('Update User Details - Response status: ${response.statusCode}');
+      debugPrint('Update User Details - Response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        setState(() {
+          _userDetails = {..._userDetails, ...updatedData};
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('User updated successfully'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        throw Exception('Failed to update user: ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('Error updating user: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to update user: ${e.toString()}'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _resetUserPassword(String newPassword) async {
+    try {
+      debugPrint('Resetting password for userId: ${widget.userId}');
+
+      // Use ApiService for password reset
+      final response = await ApiService.put(
+        '/admin/users/${widget.userId}/reset-password',
+        body: {'newPassword': newPassword},
+        token: widget.token,
+      );
+
+      debugPrint('Reset Password - Response status: ${response.statusCode}');
+      debugPrint('Reset Password - Response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Password reset successfully'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        throw Exception('Failed to reset password: ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('Error resetting password: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to reset password: ${e.toString()}'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   String _formatDate(String? dateString) {
-    if (dateString == null) return 'Never';
+    if (dateString == null || dateString.isEmpty) return 'Not available';
 
     try {
       final date = DateTime.parse(dateString);
       return DateFormat('MMM dd, yyyy').format(date);
     } catch (e) {
-      return 'Invalid date';
+      return dateString; // Return original string if parsing fails
+    }
+  }
+
+  String _formatDateTime(String? dateString) {
+    if (dateString == null || dateString.isEmpty) return 'Never';
+
+    try {
+      final date = DateTime.parse(dateString);
+      return DateFormat('MMM dd, yyyy HH:mm').format(date);
+    } catch (e) {
+      return dateString; // Return original string if parsing fails
     }
   }
 
@@ -139,273 +264,204 @@ class _AdminUserDetailsScreenState extends State<AdminUserDetailsScreen> {
 
               // User Details Content
               Expanded(
-                child: _isLoading
-                    ? const Center(
-                  child: CircularProgressIndicator(
-                    color: Colors.white,
-                  ),
-                )
-                    : SingleChildScrollView(
-                  child: Column(
-                    children: [
-                      // User Profile Card
-                      Container(
-                        margin: const EdgeInsets.all(16),
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.1),
-                              blurRadius: 10,
-                              offset: const Offset(0, 5),
+                child: RefreshIndicator(
+                  onRefresh: _fetchUserDetails,
+                  color: const Color(0xFF7E5EFD),
+                  child: SingleChildScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    child: Column(
+                      children: [
+                        // Loading indicator
+                        if (_isLoading)
+                          const Padding(
+                            padding: EdgeInsets.all(20),
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
                             ),
-                          ],
-                        ),
-                        child: Column(
-                          children: [
-                            // User Avatar
-                            CircleAvatar(
-                              radius: 40,
-                              backgroundColor: const Color(0xFFF0EAFF),
-                              child: Text(
-                                _userDetails['name']
-                                    ?.substring(0, 1)
-                                    .toUpperCase() ??
-                                    'U',
-                                style: const TextStyle(
-                                  fontSize: 30,
-                                  fontWeight: FontWeight.bold,
-                                  color: Color(0xFF7E5EFD),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 16),
+                          ),
 
-                            // User Name
-                            Text(
-                              _userDetails['name'] ?? 'Unknown User',
-                              style: const TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                              ),
+                        // Error message
+                        if (_errorMessage != null)
+                          Container(
+                            margin: const EdgeInsets.all(16),
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.orange.shade100,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.orange.shade300),
                             ),
-                            const SizedBox(height: 4),
-
-                            // User Email
-                            Text(
-                              _userDetails['email'] ?? 'No email',
-                              style: TextStyle(
-                                fontSize: 16,
-                                color: Colors.grey.shade600,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-
-                            // User Status
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: _userDetails['status'] == 'Active'
-                                    ? Colors.green.shade100
-                                    : Colors.red.shade100,
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              child: Text(
-                                _userDetails['status'] ?? 'Unknown',
-                                style: TextStyle(
-                                  color:
-                                  _userDetails['status'] == 'Active'
-                                      ? Colors.green.shade800
-                                      : Colors.red.shade800,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-
-                            // Action Buttons
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
+                            child: Row(
                               children: [
-                                ElevatedButton.icon(
-                                  onPressed: () {
-                                    _showEditUserDialog();
-                                  },
-                                  icon: const Icon(Icons.edit),
-                                  label: const Text('Edit'),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor:
-                                    const Color(0xFF7E5EFD),
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                OutlinedButton.icon(
-                                  onPressed: () {
-                                    _showResetPasswordDialog();
-                                  },
-                                  icon: const Icon(Icons.lock_reset),
-                                  label: const Text('Reset Password'),
-                                  style: OutlinedButton.styleFrom(
-                                    foregroundColor:
-                                    const Color(0xFF7E5EFD),
+                                Icon(Icons.warning, color: Colors.orange.shade700),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    _errorMessage!,
+                                    style: TextStyle(color: Colors.orange.shade700),
                                   ),
                                 ),
                               ],
                             ),
-                          ],
-                        ),
-                      ),
+                          ),
 
-                      // User Information Card
-                      Container(
-                        margin:
-                        const EdgeInsets.symmetric(horizontal: 16),
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.1),
-                              blurRadius: 10,
-                              offset: const Offset(0, 5),
-                            ),
-                          ],
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'User Information',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
+                        // User Profile Card
+                        Container(
+                          margin: const EdgeInsets.all(16),
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                blurRadius: 10,
+                                offset: const Offset(0, 5),
                               ),
-                            ),
-                            const SizedBox(height: 16),
-
-                            // Phone
-                            _buildInfoRow(
-                              'Phone',
-                              _userDetails['phone'] ?? 'Not provided',
-                              Icons.phone,
-                            ),
-                            const Divider(),
-
-                            // Address
-                            _buildInfoRow(
-                              'Address',
-                              _userDetails['address'] ?? 'Not provided',
-                              Icons.location_on,
-                            ),
-                            const Divider(),
-
-                            // Joining Date (Created At)
-                            _buildInfoRow(
-                              'Joining Date',
-                              _formatDate(_userDetails['createdAt'] ?? _userDetails['joinedAt']),
-                              Icons.calendar_today,
-                            ),
-                            const Divider(),
-
-                            // Last Login Date
-                            _buildInfoRow(
-                              'Last Login',
-                              _formatDate(_userDetails['lastLogin'] ?? _userDetails['lastLoginAt']),
-                              Icons.login,
-                            ),
-                            const Divider(),
-
-                            // Receipts Count
-                            _buildInfoRow(
-                              'Total Receipts',
-                              '${_userDetails['receiptsCount'] ?? _userReceipts.length}',
-                              Icons.receipt_long,
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-
-                      // Recent Receipts Card
-                      Container(
-                        margin:
-                        const EdgeInsets.symmetric(horizontal: 16),
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.1),
-                              blurRadius: 10,
-                              offset: const Offset(0, 5),
-                            ),
-                          ],
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              mainAxisAlignment:
-                              MainAxisAlignment.spaceBetween,
-                              children: [
-                                const Text(
-                                  'Recent Receipts',
-                                  style: TextStyle(
-                                    fontSize: 18,
+                            ],
+                          ),
+                          child: Column(
+                            children: [
+                              // User Avatar
+                              CircleAvatar(
+                                radius: 40,
+                                backgroundColor: const Color(0xFFF0EAFF),
+                                child: Text(
+                                  (_userDetails['name']?.toString() ?? 'U')
+                                      .substring(0, 1)
+                                      .toUpperCase(),
+                                  style: const TextStyle(
+                                    fontSize: 30,
                                     fontWeight: FontWeight.bold,
+                                    color: Color(0xFF7E5EFD),
                                   ),
                                 ),
-                                TextButton(
-                                  onPressed: () {
-                                    // Navigate to user receipts screen
-                                  },
-                                  child: const Text(
-                                    'View All',
-                                    style: TextStyle(
-                                      color: Color(0xFF7E5EFD),
+                              ),
+                              const SizedBox(height: 16),
+
+                              // User Name
+                              Text(
+                                _userDetails['name']?.toString() ?? 'Unknown User',
+                                style: const TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+
+                              // User Email
+                              Text(
+                                _userDetails['email']?.toString() ?? 'No email',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  color: Colors.grey.shade600,
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+
+                              // Action Buttons
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  ElevatedButton.icon(
+                                    onPressed: () {
+                                      _showEditUserDialog();
+                                    },
+                                    icon: const Icon(Icons.edit),
+                                    label: const Text('Edit'),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF7E5EFD),
                                     ),
                                   ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-
-                            // Receipts List
-                            _userReceipts.isEmpty
-                                ? const Center(
-                              child: Padding(
-                                padding: EdgeInsets.all(16.0),
-                                child: Text(
-                                  'No receipts found',
-                                  style: TextStyle(
-                                    color: Colors.grey,
+                                  const SizedBox(width: 16),
+                                  OutlinedButton.icon(
+                                    onPressed: () {
+                                      _showResetPasswordDialog();
+                                    },
+                                    icon: const Icon(Icons.lock_reset),
+                                    label: const Text('Reset Password'),
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: const Color(0xFF7E5EFD),
+                                    ),
                                   ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        // User Information Card
+                        Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 16),
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                blurRadius: 10,
+                                offset: const Offset(0, 5),
+                              ),
+                            ],
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'User Information',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
                                 ),
                               ),
-                            )
-                                : ListView.builder(
-                              shrinkWrap: true,
-                              physics:
-                              const NeverScrollableScrollPhysics(),
-                              itemCount: _userReceipts.length > 5
-                                  ? 5
-                                  : _userReceipts.length,
-                              itemBuilder: (context, index) {
-                                final receipt =
-                                _userReceipts[index];
-                                return _buildReceiptItem(receipt);
-                              },
-                            ),
-                          ],
+                              const SizedBox(height: 16),
+
+                              // User ID
+                              _buildInfoRow(
+                                'User ID',
+                                _userDetails['id']?.toString() ?? 'Not available',
+                                Icons.fingerprint,
+                              ),
+                              const Divider(),
+
+                              // Country
+                              _buildInfoRow(
+                                'Country',
+                                _userDetails['country']?.toString() ?? 'Not provided',
+                                Icons.public,
+                              ),
+                              const Divider(),
+
+                              // Joining Date (Created At)
+                              _buildInfoRow(
+                                'Joining Date',
+                                _formatDate(_userDetails['createdAt']?.toString() ??
+                                    _userDetails['joinedAt']?.toString()),
+                                Icons.calendar_today,
+                              ),
+                              const Divider(),
+
+                              // Last Login Date
+                              _buildInfoRow(
+                                'Last Login',
+                                _formatDateTime(_userDetails['lastLogin']?.toString() ??
+                                    _userDetails['lastLoginAt']?.toString()),
+                                Icons.login,
+                              ),
+                              const Divider(),
+
+                              // Receipts Count
+                              _buildInfoRow(
+                                'Total Receipts',
+                                '${_userDetails['receiptsCount']?.toString() ?? '0'}',
+                                Icons.receipt_long,
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 16),
-                    ],
+                        const SizedBox(height: 16),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -460,87 +516,11 @@ class _AdminUserDetailsScreenState extends State<AdminUserDetailsScreen> {
     );
   }
 
-  Widget _buildReceiptItem(Map<String, dynamic> receipt) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF0EAFF),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Icon(
-              Icons.receipt,
-              color: Color(0xFF7E5EFD),
-              size: 24,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  receipt['merchant'] ?? 'Unknown Merchant',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                Text(
-                  _formatDate(receipt['date']),
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.grey.shade600,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                '\$${receipt['amount']?.toStringAsFixed(2) ?? '0.00'}',
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  receipt['category'] ?? 'Uncategorized',
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: Color(0xFF7E5EFD),
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
 
   void _showEditUserDialog() {
-    final nameController = TextEditingController(text: _userDetails['name']);
-    final emailController = TextEditingController(text: _userDetails['email']);
-    final phoneController = TextEditingController(text: _userDetails['phone']);
-    final addressController =
-    TextEditingController(text: _userDetails['address']);
+    final nameController = TextEditingController(text: _userDetails['name']?.toString());
+    final emailController = TextEditingController(text: _userDetails['email']?.toString());
+    final countryController = TextEditingController(text: _userDetails['country']?.toString());
 
     showDialog(
       context: context,
@@ -567,19 +547,10 @@ class _AdminUserDetailsScreenState extends State<AdminUserDetailsScreen> {
                 ),
                 const SizedBox(height: 16),
                 TextField(
-                  controller: phoneController,
+                  controller: countryController,
                   decoration: const InputDecoration(
-                    labelText: 'Phone',
+                    labelText: 'Country',
                   ),
-                  keyboardType: TextInputType.phone,
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: addressController,
-                  decoration: const InputDecoration(
-                    labelText: 'Address',
-                  ),
-                  maxLines: 2,
                 ),
               ],
             ),
@@ -592,23 +563,11 @@ class _AdminUserDetailsScreenState extends State<AdminUserDetailsScreen> {
             ElevatedButton(
               onPressed: () {
                 Navigator.pop(context);
-
-                setState(() {
-                  _userDetails = {
-                    ..._userDetails,
-                    'name': nameController.text,
-                    'email': emailController.text,
-                    'phone': phoneController.text,
-                    'address': addressController.text,
-                  };
+                _updateUserDetails({
+                  'name': nameController.text,
+                  'email': emailController.text,
+                  'country': countryController.text,
                 });
-
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('User updated successfully'),
-                    backgroundColor: Color(0xFF7E5EFD),
-                  ),
-                );
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF7E5EFD),
@@ -685,13 +644,7 @@ class _AdminUserDetailsScreenState extends State<AdminUserDetailsScreen> {
                 }
 
                 Navigator.pop(context);
-
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Password reset successfully'),
-                    backgroundColor: Color(0xFF7E5EFD),
-                  ),
-                );
+                _resetUserPassword(passwordController.text);
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF7E5EFD),
@@ -703,4 +656,5 @@ class _AdminUserDetailsScreenState extends State<AdminUserDetailsScreen> {
       },
     );
   }
+
 }

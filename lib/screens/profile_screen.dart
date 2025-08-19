@@ -7,8 +7,12 @@ import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../widgets/curved_background.dart';
 import '../providers/user_provider.dart';
+import '../services/api_service_bypass.dart';
+import '../services/subscription_service_bypass.dart';
 
 class ProfileScreen extends StatefulWidget {
   final String userId;
@@ -26,50 +30,80 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final _addressController = TextEditingController();
   final _phoneController = TextEditingController();
   final _countryController = TextEditingController();
+  final SubscriptionService _subscriptionService = SubscriptionService();
   File? _profileImage;
   final _formKey = GlobalKey<FormState>();
   bool _isLoading = true;
   bool _isLoadingLocation = false;
-  final bool _isSaving = false;
+  bool _isSaving = false;
   String? _profileImageUrl;
   String? _errorMessage;
+  String? _originalName;
+
+  // Subscription related
+  bool _isPremium = false;
+  Map<String, dynamic>? _currentSubscription;
+  bool _isLoadingSubscription = false;
 
   @override
   void initState() {
     super.initState();
     _fetchUserProfile();
+    _fetchSubscriptionData();
+  }
+
+  Future<void> _fetchSubscriptionData() async {
+    setState(() => _isLoadingSubscription = true);
+
+    try {
+      final subscription = await _subscriptionService.getCurrentSubscription(
+        token: widget.token,
+        userId: widget.userId,
+      );
+      final isPremium = _subscriptionService.isPremiumSubscription(subscription);
+
+      if (mounted) {
+        setState(() {
+          _currentSubscription = subscription;
+          _isPremium = isPremium;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error fetching subscription data: $e');
+      if (mounted) {
+        setState(() {
+          _isPremium = false;
+          _currentSubscription = null;
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingSubscription = false);
+      }
+    }
   }
 
   Future<void> _fetchUserProfile() async {
-    const url = 'https://manage-receipt-backend-bnl1.onrender.com/api/users/profile';
+    final url = '${dotenv.env['API_BASE_URL']}/api/users/profile?userId=${widget.userId}';
     try {
-      final response = await http.get(
-        Uri.parse(url),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
-      );
+      final headers = await ApiService.getHeaders(token: widget.token);
+      final response = await http.get(Uri.parse(url), headers: headers);
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-
-        // Find the user with the matching userId
-        final user = (data['users'] as List<dynamic>).firstWhere(
-              (user) => user['id'] == widget.userId,
-          orElse: () => null,
-        );
+        final user = data['user'];
 
         if (user != null) {
-          // Get country from UserProvider
           final userProvider = Provider.of<UserProvider>(context, listen: false);
           final userCountry = userProvider.country ?? user['country'] ?? '';
 
           setState(() {
             _nameController.text = user['name'] ?? '';
+            _originalName = user['name'] ?? '';
             _emailController.text = user['email'] ?? '';
             _addressController.text = user['address'] ?? '';
             _phoneController.text = user['phone'] ?? '';
             _countryController.text = userCountry;
-
-            // Set the profile image URL directly
             _profileImageUrl = user['profileImage'];
             _isLoading = false;
           });
@@ -96,13 +130,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<String?> _uploadImageToCloudinary(
       BuildContext context, dynamic image) async {
     setState(() {
-      _isLoading = true; // Indicate loading during the upload process
+      _isLoading = true;
     });
 
     const cloudinaryUrl =
         'https://api.cloudinary.com/v1_1/ds1lqhvc3/image/upload';
-    const uploadPreset =
-        'user_profile'; // Ensure this preset exists in Cloudinary
+    const uploadPreset = 'user_profile';
 
     try {
       var request = http.MultipartRequest('POST', Uri.parse(cloudinaryUrl))
@@ -126,7 +159,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         final responseBody = await response.stream.bytesToString();
         final responseData = json.decode(responseBody);
         debugPrint('Cloudinary upload successful: $responseData');
-        return responseData['secure_url']; // Return the Cloudinary URL
+        return responseData['secure_url'];
       } else {
         final responseBody = await response.stream.bytesToString();
         debugPrint('Cloudinary upload failed: $responseBody');
@@ -137,12 +170,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return null;
     } finally {
       setState(() {
-        _isLoading = false; // Reset loading state
+        _isLoading = false;
       });
     }
   }
 
-  // Show image picker dialog with Camera and Gallery options
   void _showImagePickerDialog() {
     showDialog(
       context: context,
@@ -228,8 +260,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
         await _uploadImageToCloudinary(context, pickedFile);
         if (uploadedImageUrl != null) {
           setState(() {
-            _profileImageUrl = uploadedImageUrl; // Set the Cloudinary URL
-            _profileImage = null; // Clear the local file reference
+            _profileImageUrl = uploadedImageUrl;
+            _profileImage = null;
           });
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -248,15 +280,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  Future<void> _clearCachedUsername() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('user_name_${widget.userId}');
+      debugPrint('Profile - Cleared cached username for user ${widget.userId}');
+    } catch (e) {
+      debugPrint('Error clearing cached username: $e');
+    }
+  }
+
   Future<void> _saveProfile() async {
     if (_formKey.currentState!.validate()) {
       setState(() {
         _isLoading = true;
+        _isSaving = true;
       });
 
       try {
-        final uri =
-        Uri.parse('https://manage-receipt-backend-bnl1.onrender.com/api/users/update-profile');
+        final uri = Uri.parse('${dotenv.env['API_BASE_URL']}/api/users/update-profile');
         final request = http.MultipartRequest('PUT', uri);
 
         // Add text fields
@@ -265,26 +307,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
         request.fields['email'] = _emailController.text;
         request.fields['address'] = _addressController.text;
         request.fields['phone'] = _phoneController.text;
-        // Note: We don't send country as it's not editable
 
-        // Add the Cloudinary image URL if available
         if (_profileImageUrl != null) {
           request.fields['profileImage'] = _profileImageUrl!;
         }
 
-        // Add authorization header
-        request.headers['Authorization'] = 'Bearer ${widget.token}';
+        // Add headers with platform and version info
+        final headers = await ApiService.getHeaders(token: widget.token);
+        request.headers.addAll(headers);
 
-        // Send the request
         final response = await request.send();
 
-        // Handle the response
         if (response.statusCode == 200) {
           final responseBody = await response.stream.bytesToString();
           final responseData = json.decode(responseBody);
 
           if (responseData['message'] == 'Profile updated successfully') {
-            Navigator.pop(context);
+            final nameChanged = _originalName != _nameController.text;
+
+            if (nameChanged) {
+              debugPrint('Profile - Name changed from $_originalName to ${_nameController.text}');
+              await _clearCachedUsername();
+
+              final userProvider = Provider.of<UserProvider>(context, listen: false);
+              userProvider.updateUserInfo(username: _nameController.text, userId: '', token: '');
+
+              debugPrint('Profile - Updated UserProvider with new name: ${_nameController.text}');
+            }
+
+            Navigator.pop(context, nameChanged);
+
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
                 content: Text('Profile updated successfully!'),
@@ -310,6 +362,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       } finally {
         setState(() {
           _isLoading = false;
+          _isSaving = false;
         });
       }
     }
@@ -329,12 +382,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     bool serviceEnabled;
     LocationPermission permission;
 
-    // Test if location services are enabled
     serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content:
-        Text('Location services are disabled. Please enable the services'),
+        content: Text('Location services are disabled. Please enable the services'),
         backgroundColor: Colors.orange,
       ));
       return false;
@@ -354,8 +405,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     if (permission == LocationPermission.deniedForever) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text(
-            'Location permissions are permanently denied, we cannot request permissions.'),
+        content: Text('Location permissions are permanently denied, we cannot request permissions.'),
         backgroundColor: Colors.red,
       ));
       return false;
@@ -370,7 +420,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     });
 
     try {
-      // Check location permissions with better error handling
       final hasPermission = await _handleLocationPermission();
 
       if (!hasPermission) {
@@ -380,12 +429,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
         return;
       }
 
-      // Get current position
       Position position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
 
-      // Convert position to address
       List<Placemark> placemarks = await placemarkFromCoordinates(
         position.latitude,
         position.longitude,
@@ -393,7 +440,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
       if (placemarks.isNotEmpty) {
         Placemark place = placemarks[0];
-        // Build address with null checks to avoid null issues
         String address = [
           place.street,
           place.subLocality,
@@ -421,9 +467,199 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  Widget _buildSubscriptionSection() {
+    if (_isLoadingSubscription) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade50,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey.shade300),
+        ),
+        child: const Row(
+          children: [
+            SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(
+                color: Color(0xFF7E5EFD),
+                strokeWidth: 2,
+              ),
+            ),
+            SizedBox(width: 12),
+            Text('Loading subscription details...'),
+          ],
+        ),
+      );
+    }
+
+    if (_currentSubscription == null) {
+      // Show free plan info when no subscription data
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Subscription Details',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF7E5EFD),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade50,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey.shade300),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.person,
+                      color: Colors.grey.shade600,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Free Plan',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Basic features with 25 receipt limit',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey.shade600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade100,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    'ACTIVE',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.green.shade700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+
+    final plan = _currentSubscription!['Plan'];
+    final planName = plan?['name'] ?? 'Unknown Plan';
+    final startDate = _currentSubscription!['startDate'];
+    final paymentStatus = _currentSubscription!['paymentStatus'] ?? 'active';
+
+    String formattedStartDate = 'Unknown';
+    if (startDate != null) {
+      try {
+        final date = DateTime.parse(startDate);
+        formattedStartDate = '${date.day}/${date.month}/${date.year}';
+      } catch (e) {
+        debugPrint('Error parsing start date: $e');
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Subscription Details',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+            color: Color(0xFF7E5EFD),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: _isPremium ? const Color(0xFFE8E6FF) : Colors.grey.shade50,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: _isPremium ? const Color(0xFF7E5EFD) : Colors.grey.shade300,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    _isPremium ? Icons.star : Icons.person,
+                    color: _isPremium ? const Color(0xFF7E5EFD) : Colors.grey,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    planName,
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: _isPremium ? const Color(0xFF7E5EFD) : Colors.grey.shade700,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Start Date: $formattedStartDate',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.grey.shade600,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: paymentStatus == 'active' ? Colors.green.shade100 : Colors.orange.shade100,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      paymentStatus.toUpperCase(),
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: paymentStatus == 'active' ? Colors.green.shade700 : Colors.orange.shade700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Get currency symbol from UserProvider
     final userProvider = Provider.of<UserProvider>(context);
     final currencySymbol = userProvider.effectiveCurrencySymbol;
 
@@ -437,17 +673,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
           : CurvedBackground(
         child: Column(
           children: [
-            // App Bar with back button and logo
             SafeArea(
               child: Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     IconButton(
-                      icon: const Icon(Icons.arrow_back,
-                          color: Colors.white),
+                      icon: const Icon(Icons.arrow_back, color: Colors.white),
                       onPressed: () => Navigator.pop(context),
                     ),
                     Container(
@@ -479,7 +712,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
             ),
 
-            // Profile title and subtitle
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 0),
               child: Column(
@@ -508,14 +740,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
             ),
 
-            // Main content
             Expanded(
               child: SingleChildScrollView(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 24),
                   child: Column(
                     children: [
-                      // Profile card
                       Container(
                         margin: const EdgeInsets.only(top: 20),
                         padding: const EdgeInsets.all(24),
@@ -535,39 +765,80 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              // Profile image
                               Center(
-                                child: Stack(
-                                  alignment: Alignment.bottomRight,
+                                child: Column(
                                   children: [
-                                    CircleAvatar(
-                                      radius: 60,
-                                      backgroundColor: Colors.grey[200],
-                                      backgroundImage:
-                                      _getBackgroundImage(),
-                                      child: (_profileImageUrl == null &&
-                                          _profileImage == null)
-                                          ? const Icon(
-                                        Icons.person,
-                                        size: 60,
-                                        color: Colors.grey,
-                                      )
-                                          : null,
-                                    ),
-                                    Container(
-                                      decoration: const BoxDecoration(
-                                        color: Color(0xFF7E5EFD),
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: IconButton(
-                                        icon: const Icon(
-                                          Icons.edit,
-                                          color: Colors.white,
-                                          size: 20,
+                                    Stack(
+                                      alignment: Alignment.bottomRight,
+                                      children: [
+                                        CircleAvatar(
+                                          radius: 60,
+                                          backgroundColor: Colors.grey[200],
+                                          backgroundImage: _getBackgroundImage(),
+                                          child: (_profileImageUrl == null && _profileImage == null)
+                                              ? const Icon(
+                                            Icons.person,
+                                            size: 60,
+                                            color: Colors.grey,
+                                          )
+                                              : null,
                                         ),
-                                        onPressed: _showImagePickerDialog,
+                                        Container(
+                                          decoration: const BoxDecoration(
+                                            color: Color(0xFF7E5EFD),
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: IconButton(
+                                            icon: const Icon(
+                                              Icons.edit,
+                                              color: Colors.white,
+                                              size: 20,
+                                            ),
+                                            onPressed: _showImagePickerDialog,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 16),
+                                    // User name
+                                    Text(
+                                      _nameController.text.isNotEmpty ? _nameController.text : 'User Name',
+                                      style: const TextStyle(
+                                        fontSize: 20,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.black87,
                                       ),
                                     ),
+                                    const SizedBox(height: 8),
+                                    // Subscription label - COMMENTED OUT
+                                    /*
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                                      decoration: BoxDecoration(
+                                        color: _isPremium ? const Color(0xFF7E5EFD) : Colors.grey.shade600,
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            _isPremium ? Icons.star : Icons.person,
+                                            color: Colors.white,
+                                            size: 16,
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                            _isPremium ? 'Premium' : 'Basic Plan',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    */
                                   ],
                                 ),
                               ),
@@ -576,24 +847,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               if (_errorMessage != null)
                                 Container(
                                   padding: const EdgeInsets.all(8),
-                                  margin:
-                                  const EdgeInsets.only(bottom: 16),
+                                  margin: const EdgeInsets.only(bottom: 16),
                                   decoration: BoxDecoration(
                                     color: Colors.red.shade50,
-                                    borderRadius:
-                                    BorderRadius.circular(8),
-                                    border: Border.all(
-                                        color: Colors.red.shade200),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: Colors.red.shade200),
                                   ),
                                   child: Text(
                                     _errorMessage!,
-                                    style: TextStyle(
-                                        color: Colors.red.shade800),
+                                    style: TextStyle(color: Colors.red.shade800),
                                     textAlign: TextAlign.center,
                                   ),
                                 ),
 
-                              // Name field
                               const Text(
                                 'Name',
                                 style: TextStyle(
@@ -607,30 +873,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 controller: _nameController,
                                 decoration: InputDecoration(
                                   hintText: 'Enter your name',
-                                  contentPadding:
-                                  const EdgeInsets.symmetric(
+                                  contentPadding: const EdgeInsets.symmetric(
                                     horizontal: 16,
                                     vertical: 16,
                                   ),
                                   border: OutlineInputBorder(
-                                    borderRadius:
-                                    BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(8),
                                     borderSide: BorderSide(
-                                      color: const Color(0xFF7E5EFD)
-                                          .withOpacity(0.5),
+                                      color: const Color(0xFF7E5EFD).withOpacity(0.5),
                                     ),
                                   ),
                                   enabledBorder: OutlineInputBorder(
-                                    borderRadius:
-                                    BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(8),
                                     borderSide: BorderSide(
-                                      color: const Color(0xFF7E5EFD)
-                                          .withOpacity(0.5),
+                                      color: const Color(0xFF7E5EFD).withOpacity(0.5),
                                     ),
                                   ),
                                   focusedBorder: OutlineInputBorder(
-                                    borderRadius:
-                                    BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(8),
                                     borderSide: const BorderSide(
                                       color: Color(0xFF7E5EFD),
                                     ),
@@ -645,7 +905,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ),
                               const SizedBox(height: 20),
 
-                              // Email field - Made non-editable
                               const Text(
                                 'Email',
                                 style: TextStyle(
@@ -657,39 +916,32 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               const SizedBox(height: 8),
                               TextFormField(
                                 controller: _emailController,
-                                enabled: false, // Make it non-editable
+                                enabled: false,
                                 keyboardType: TextInputType.emailAddress,
                                 decoration: InputDecoration(
                                   hintText: 'Email address',
-                                  contentPadding:
-                                  const EdgeInsets.symmetric(
+                                  contentPadding: const EdgeInsets.symmetric(
                                     horizontal: 16,
                                     vertical: 16,
                                   ),
                                   border: OutlineInputBorder(
-                                    borderRadius:
-                                    BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(8),
                                     borderSide: BorderSide(
-                                      color: const Color(0xFF7E5EFD)
-                                          .withOpacity(0.5),
+                                      color: const Color(0xFF7E5EFD).withOpacity(0.5),
                                     ),
                                   ),
                                   enabledBorder: OutlineInputBorder(
-                                    borderRadius:
-                                    BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(8),
                                     borderSide: BorderSide(
-                                      color: const Color(0xFF7E5EFD)
-                                          .withOpacity(0.5),
+                                      color: const Color(0xFF7E5EFD).withOpacity(0.5),
                                     ),
                                   ),
                                   focusedBorder: OutlineInputBorder(
-                                    borderRadius:
-                                    BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(8),
                                     borderSide: const BorderSide(
                                       color: Color(0xFF7E5EFD),
                                     ),
                                   ),
-                                  // Add a filled background to indicate it's disabled
                                   filled: true,
                                   fillColor: Colors.grey.shade100,
                                 ),
@@ -697,9 +949,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   if (value == null || value.isEmpty) {
                                     return 'Please enter your email';
                                   }
-                                  if (!RegExp(
-                                      r'^[\w-]+@([\w-]+\.)+[\w-]{2,4}$')
-                                      .hasMatch(value)) {
+                                  if (!RegExp(r'^[\w-]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(value)) {
                                     return 'Please enter a valid email';
                                   }
                                   return null;
@@ -707,7 +957,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ),
                               const SizedBox(height: 20),
 
-                              // Phone number field
                               const Text(
                                 'Phone Number',
                                 style: TextStyle(
@@ -722,30 +971,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 keyboardType: TextInputType.phone,
                                 decoration: InputDecoration(
                                   hintText: 'Enter your phone number',
-                                  contentPadding:
-                                  const EdgeInsets.symmetric(
+                                  contentPadding: const EdgeInsets.symmetric(
                                     horizontal: 16,
                                     vertical: 16,
                                   ),
                                   border: OutlineInputBorder(
-                                    borderRadius:
-                                    BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(8),
                                     borderSide: BorderSide(
-                                      color: const Color(0xFF7E5EFD)
-                                          .withOpacity(0.5),
+                                      color: const Color(0xFF7E5EFD).withOpacity(0.5),
                                     ),
                                   ),
                                   enabledBorder: OutlineInputBorder(
-                                    borderRadius:
-                                    BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(8),
                                     borderSide: BorderSide(
-                                      color: const Color(0xFF7E5EFD)
-                                          .withOpacity(0.5),
+                                      color: const Color(0xFF7E5EFD).withOpacity(0.5),
                                     ),
                                   ),
                                   focusedBorder: OutlineInputBorder(
-                                    borderRadius:
-                                    BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(8),
                                     borderSide: const BorderSide(
                                       color: Color(0xFF7E5EFD),
                                     ),
@@ -755,8 +998,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   if (value == null || value.isEmpty) {
                                     return 'Please enter your phone number';
                                   }
-                                  if (!RegExp(r'^[0-9]+$')
-                                      .hasMatch(value)) {
+                                  if (!RegExp(r'^[0-9]+$').hasMatch(value)) {
                                     return 'Phone number must contain only numbers';
                                   }
                                   if (value.length != 10) {
@@ -767,7 +1009,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ),
                               const SizedBox(height: 20),
 
-                              // Address field with location button
                               const Text(
                                 'Address',
                                 style: TextStyle(
@@ -778,8 +1019,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ),
                               const SizedBox(height: 8),
                               Row(
-                                crossAxisAlignment:
-                                CrossAxisAlignment.start,
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Expanded(
                                     child: TextFormField(
@@ -787,30 +1027,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                       maxLines: 3,
                                       decoration: InputDecoration(
                                         hintText: 'Enter your address',
-                                        contentPadding:
-                                        const EdgeInsets.symmetric(
+                                        contentPadding: const EdgeInsets.symmetric(
                                           horizontal: 16,
                                           vertical: 16,
                                         ),
                                         border: OutlineInputBorder(
-                                          borderRadius:
-                                          BorderRadius.circular(8),
+                                          borderRadius: BorderRadius.circular(8),
                                           borderSide: BorderSide(
-                                            color: const Color(0xFF7E5EFD)
-                                                .withOpacity(0.5),
+                                            color: const Color(0xFF7E5EFD).withOpacity(0.5),
                                           ),
                                         ),
                                         enabledBorder: OutlineInputBorder(
-                                          borderRadius:
-                                          BorderRadius.circular(8),
+                                          borderRadius: BorderRadius.circular(8),
                                           borderSide: BorderSide(
-                                            color: const Color(0xFF7E5EFD)
-                                                .withOpacity(0.5),
+                                            color: const Color(0xFF7E5EFD).withOpacity(0.5),
                                           ),
                                         ),
                                         focusedBorder: OutlineInputBorder(
-                                          borderRadius:
-                                          BorderRadius.circular(8),
+                                          borderRadius: BorderRadius.circular(8),
                                           borderSide: const BorderSide(
                                             color: Color(0xFF7E5EFD),
                                           ),
@@ -822,17 +1056,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   Column(
                                     children: [
                                       IconButton(
-                                        onPressed: _isLoadingLocation
-                                            ? null
-                                            : _getCurrentLocation,
+                                        onPressed: _isLoadingLocation ? null : _getCurrentLocation,
                                         icon: _isLoadingLocation
                                             ? const SizedBox(
                                           width: 24,
                                           height: 24,
-                                          child:
-                                          CircularProgressIndicator(
-                                            color:
-                                            Color(0xFF7E5EFD),
+                                          child: CircularProgressIndicator(
+                                            color: Color(0xFF7E5EFD),
                                             strokeWidth: 2,
                                           ),
                                         )
@@ -856,7 +1086,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ),
                               const SizedBox(height: 20),
 
-                              // Country field - Non-editable with currency info
                               const Text(
                                 'Country',
                                 style: TextStyle(
@@ -868,41 +1097,33 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               const SizedBox(height: 8),
                               TextFormField(
                                 controller: _countryController,
-                                enabled: false, // Make it non-editable
+                                enabled: false,
                                 decoration: InputDecoration(
                                   hintText: 'Country',
-                                  contentPadding:
-                                  const EdgeInsets.symmetric(
+                                  contentPadding: const EdgeInsets.symmetric(
                                     horizontal: 16,
                                     vertical: 16,
                                   ),
                                   border: OutlineInputBorder(
-                                    borderRadius:
-                                    BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(8),
                                     borderSide: BorderSide(
-                                      color: const Color(0xFF7E5EFD)
-                                          .withOpacity(0.5),
+                                      color: const Color(0xFF7E5EFD).withOpacity(0.5),
                                     ),
                                   ),
                                   enabledBorder: OutlineInputBorder(
-                                    borderRadius:
-                                    BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(8),
                                     borderSide: BorderSide(
-                                      color: const Color(0xFF7E5EFD)
-                                          .withOpacity(0.5),
+                                      color: const Color(0xFF7E5EFD).withOpacity(0.5),
                                     ),
                                   ),
                                   focusedBorder: OutlineInputBorder(
-                                    borderRadius:
-                                    BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(8),
                                     borderSide: const BorderSide(
                                       color: Color(0xFF7E5EFD),
                                     ),
                                   ),
-                                  // Add a filled background to indicate it's disabled
                                   filled: true,
                                   fillColor: Colors.grey.shade100,
-                                  // Add currency info to the suffix
                                   suffixText: currencySymbol,
                                   suffixStyle: const TextStyle(
                                     color: Color(0xFF7E5EFD),
@@ -912,25 +1133,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ),
                               const SizedBox(height: 32),
 
-                              // Save button
+                              // Subscription Details Section - COMMENTED OUT
+                              /*
+                              _buildSubscriptionSection(),
+                              const SizedBox(height: 32),
+                              */
+
                               SizedBox(
                                 width: double.infinity,
                                 height: 50,
                                 child: ElevatedButton(
-                                  onPressed:
-                                  _isSaving ? null : _saveProfile,
+                                  onPressed: _isSaving ? null : _saveProfile,
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor:
-                                    const Color(0xFF7E5EFD),
+                                    backgroundColor: const Color(0xFF7E5EFD),
                                     foregroundColor: Colors.white,
                                     shape: RoundedRectangleBorder(
-                                      borderRadius:
-                                      BorderRadius.circular(8),
+                                      borderRadius: BorderRadius.circular(8),
                                     ),
                                   ),
                                   child: _isSaving
-                                      ? const CircularProgressIndicator(
-                                      color: Colors.white)
+                                      ? const CircularProgressIndicator(color: Colors.white)
                                       : const Text(
                                     'Save',
                                     style: TextStyle(
@@ -955,7 +1177,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  // Helper method to get the background image safely
   ImageProvider? _getBackgroundImage() {
     if (_profileImageUrl != null) {
       return NetworkImage(_profileImageUrl!);

@@ -4,15 +4,18 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 import '../providers/receipt_provider.dart';
 import '../providers/user_provider.dart';
+import '../services/api_service_bypass.dart';
+import '../utils/encryption_helper.dart';
+import '../utils/category_icons.dart';
 import 'receipt_details_screen.dart';
 import 'filters_screen.dart';
+
+enum ExportFormat { excel, pdf }
 
 class ReportsScreen extends StatefulWidget {
   final String userId;
@@ -35,13 +38,28 @@ class _ReportsScreenState extends State<ReportsScreen> {
   List<Map<String, dynamic>> savedReceipts = [];
   bool _isLoading = true;
   bool _isExporting = false;
+  bool _isLoadingMore = false;
   double _totalAmount = 0;
   bool _hasCustomDateRange = false;
   String _customDateRangeText = '';
 
-  // Selection functionality
+// Pagination variables
+  int _currentPage = 1;
+  int _pageSize = 20;
+  int _totalCount = 0;
+  bool _hasNextPage = false;
+
+// UPDATED: Track both total user receipts and filtered total receipts
+  int _totalUserReceipts = 0; // Unfiltered total (all user receipts)
+  int _filteredTotalReceipts = 0; // Filtered total from API response
+
+// Selection functionality
   Set<String> _selectedReceiptIds = <String>{};
   bool _isSelectionMode = false;
+  ExportFormat _selectedFormat = ExportFormat.excel;
+
+// Track if any changes were made to receipts
+  bool _hasChanges = false;
 
   @override
   void initState() {
@@ -59,17 +77,33 @@ class _ReportsScreenState extends State<ReportsScreen> {
       if (widget.filterParams != null) {
         final receiptProvider =
         Provider.of<ReceiptProvider>(context, listen: false);
-        widget.filterParams!.forEach((key, value) {
+
+        // Handle both parameter formats for date filtering - prioritize dateFrom/dateTo
+        Map<String, dynamic> normalizedParams = Map.from(widget.filterParams!);
+
+        // Prioritize dateFrom/dateTo format and convert to fromDate/toDate for internal use
+        if (normalizedParams['dateFrom'] != null) {
+          normalizedParams['fromDate'] = normalizedParams['dateFrom'];
+          // Keep dateFrom for API calls that expect this format
+        }
+        if (normalizedParams['dateTo'] != null) {
+          normalizedParams['toDate'] = normalizedParams['dateTo'];
+          // Keep dateTo for API calls that expect this format
+        }
+
+        normalizedParams.forEach((key, value) {
           receiptProvider.updateFilter(key, value);
         });
 
-        if (widget.filterParams!['fromDate'] != null &&
-            widget.filterParams!['toDate'] != null) {
-          _checkForCustomDateRange(
-              widget.filterParams!['fromDate'], widget.filterParams!['toDate']);
+        // Check for custom date range with prioritized dateFrom/dateTo format
+        String? fromDate = normalizedParams['dateFrom'] ?? normalizedParams['fromDate'];
+        String? toDate = normalizedParams['dateTo'] ?? normalizedParams['toDate'];
+
+        if (fromDate != null && toDate != null) {
+          _checkForCustomDateRange(fromDate, toDate);
         }
       }
-      _fetchReceipts();
+      _fetchReceipts(reset: true);
     });
   }
 
@@ -87,13 +121,25 @@ class _ReportsScreenState extends State<ReportsScreen> {
   }
 
   bool _isPdfReceipt(Map<String, dynamic> receipt) {
-    final link = (receipt['imageLink'] ?? receipt['imageUrl'] ?? '').toString().toLowerCase();
+    final link = (receipt['decryptedImageLink'] ?? receipt['decryptedImageUrl'] ?? receipt['imageLink'] ?? receipt['imageUrl'] ?? '').toString().toLowerCase();
     return link.endsWith('.pdf');
   }
 
-  // FIXED: Method to get the correct image URL for a receipt
+// Enhanced manual receipt detection
+  bool _isManualReceipt(Map<String, dynamic> receipt) {
+    final imageUrl = receipt['decryptedImageLink'] ?? receipt['decryptedImageUrl'] ?? receipt['imageLink'] ?? receipt['imageUrl'] ?? '';
+    return receipt['isManual'] == true ||
+        imageUrl.contains('placeholder') ||
+        imageUrl.contains('Manual+Receipt') ||
+        imageUrl.isEmpty ||
+        imageUrl == 'null';
+  }
+
+// Method to get the correct image URL for a receipt
   String _getReceiptImageUrl(Map<String, dynamic> receipt) {
     final possibleUrls = [
+      receipt['decryptedImageUrl'],
+      receipt['decryptedImageLink'],
       receipt['imageUrl'],
       receipt['imageLink'],
       receipt['image_url'],
@@ -111,13 +157,164 @@ class _ReportsScreenState extends State<ReportsScreen> {
     return '';
   }
 
+// Toggle selection mode and show format selection
   void _toggleSelectionMode() {
-    setState(() {
-      _isSelectionMode = !_isSelectionMode;
-      if (!_isSelectionMode) {
+    if (!_isSelectionMode) {
+      // Entering selection mode - show format selection first
+      _showFormatSelectionDialog();
+    } else {
+      // Exiting selection mode
+      setState(() {
+        _isSelectionMode = false;
         _selectedReceiptIds.clear();
-      }
-    });
+      });
+    }
+  }
+
+// Show format selection dialog with proper state management
+  void _showFormatSelectionDialog() {
+    ExportFormat tempSelectedFormat = _selectedFormat; // Temporary selection
+
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text(
+                'Select Export Format',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF7E5EFD),
+                ),
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('Choose the format for your export:'),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () {
+                            setDialogState(() {
+                              tempSelectedFormat = ExportFormat.excel;
+                            });
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: tempSelectedFormat == ExportFormat.excel
+                                  ? const Color(0xFFE8E6FF)
+                                  : Colors.grey.shade100,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: tempSelectedFormat == ExportFormat.excel
+                                    ? const Color(0xFF7E5EFD)
+                                    : Colors.grey.shade300,
+                                width: tempSelectedFormat == ExportFormat.excel ? 2 : 1,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.table_chart,
+                                  color: tempSelectedFormat == ExportFormat.excel
+                                      ? const Color(0xFF7E5EFD)
+                                      : Colors.grey,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Excel',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    color: tempSelectedFormat == ExportFormat.excel
+                                        ? const Color(0xFF7E5EFD)
+                                        : Colors.grey.shade700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () {
+                            setDialogState(() {
+                              tempSelectedFormat = ExportFormat.pdf;
+                            });
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: tempSelectedFormat == ExportFormat.pdf
+                                  ? const Color(0xFFE8E6FF)
+                                  : Colors.grey.shade100,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: tempSelectedFormat == ExportFormat.pdf
+                                    ? const Color(0xFF7E5EFD)
+                                    : Colors.grey.shade300,
+                                width: tempSelectedFormat == ExportFormat.pdf ? 2 : 1,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.picture_as_pdf,
+                                  color: tempSelectedFormat == ExportFormat.pdf
+                                      ? const Color(0xFF7E5EFD)
+                                      : Colors.grey,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'PDF',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    color: tempSelectedFormat == ExportFormat.pdf
+                                        ? const Color(0xFF7E5EFD)
+                                        : Colors.grey.shade700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    setState(() {
+                      _selectedFormat = tempSelectedFormat; // Apply the selection
+                      _isSelectionMode = true;
+                    });
+                  },
+                  child: const Text(
+                    'Continue',
+                    style: TextStyle(
+                      color: Color(0xFF7E5EFD),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   void _toggleReceiptSelection(String receiptId) {
@@ -130,17 +327,170 @@ class _ReportsScreenState extends State<ReportsScreen> {
     });
   }
 
-  void _selectAllReceipts() {
+  // UPDATED: Select all receipts across all pages, not just current page
+  Future<void> _selectAllReceipts() async {
     setState(() {
-      if (_selectedReceiptIds.length == _filteredReceipts.length) {
-        _selectedReceiptIds.clear();
+      _selectedReceiptIds.clear();
+    });
+
+    try {
+      final receiptProvider = Provider.of<ReceiptProvider>(context, listen: false);
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      final filters = receiptProvider.filters;
+
+      // Build query parameters to get ALL receipts (no pagination)
+      // Use a very large page size to get all receipts in one call
+      final Map<String, String> queryParams = {
+        'page': '1',
+        'pageSize': '10000', // Large enough to get all receipts
+      };
+
+      // Add all current filters to query parameters (same as _fetchSavedReceipts)
+      if (filters['merchant'] != null && filters['merchant'].isNotEmpty) {
+        queryParams['merchant'] = filters['merchant'];
+      }
+
+      if (filters['categoryIds'] != null && filters['categoryIds'] is List) {
+        final categoryIds = filters['categoryIds'] as List;
+        if (categoryIds.isNotEmpty) {
+          queryParams['categoryIds'] = categoryIds.join(',');
+        }
+      } else if (filters['category'] != null && filters['category'].isNotEmpty) {
+        queryParams['category'] = filters['category'];
+      }
+
+      // Use proper date filtering with _buildDateFilters helper (server-side only)
+      final dateFilters = _buildDateFilters(filters);
+      queryParams.addAll(dateFilters);
+
+      if (filters['minAmount'] != null && filters['minAmount'].isNotEmpty) {
+        queryParams['minAmount'] = filters['minAmount'];
+      }
+
+      if (filters['maxAmount'] != null && filters['maxAmount'].isNotEmpty) {
+        queryParams['maxAmount'] = filters['maxAmount'];
+      }
+
+      if (filters['tags'] != null && (filters['tags'] as List).isNotEmpty) {
+        queryParams['tags'] = (filters['tags'] as List).join(',');
+      }
+
+      // Build query string
+      final queryString = queryParams.entries
+          .map((e) => '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
+          .join('&');
+
+      final endpoint = '/receipts/${widget.userId}?$queryString';
+
+      debugPrint('Selecting all receipts from: $endpoint');
+      debugPrint('Query parameters: $queryParams');
+
+      final response = await ApiService.get(endpoint, token: userProvider.token);
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        List<Map<String, dynamic>> allReceipts = [];
+
+        if (data is Map && data.containsKey('receipts')) {
+          allReceipts = List<Map<String, dynamic>>.from(data['receipts'] ?? []);
+        } else {
+          allReceipts = List<Map<String, dynamic>>.from(data is List ? data : []);
+        }
+
+        // Filter out unsaved receipts (same as in _fetchSavedReceipts)
+        allReceipts = allReceipts.where((receipt) => receipt['isSaved'] != false).toList();
+
+        // Apply only client-side search filter locally; date/amount already on server
+        allReceipts = _applyLocalFiltersToReceipts(allReceipts);
+
+        setState(() {
+          for (final receipt in allReceipts) {
+            final receiptId = receipt['id']?.toString() ?? '';
+            if (receiptId.isNotEmpty) {
+              _selectedReceiptIds.add(receiptId);
+            }
+          }
+        });
+
+        // Show feedback to user about how many receipts were selected
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Selected ${_selectedReceiptIds.length} receipts across all pages'),
+              backgroundColor: const Color(0xFF7E5EFD),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+
+        debugPrint('Successfully selected ${_selectedReceiptIds.length} receipts across all pages');
       } else {
+        debugPrint('Failed to fetch all receipts for selection: ${response.statusCode} - ${response.body}');
+        throw Exception('Failed to fetch receipts: ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('Error selecting all receipts: $e');
+      // Fallback to selecting only current page receipts
+      setState(() {
         _selectedReceiptIds = _filteredReceipts
-            .map((receipt) => receipt['imageId']?.toString() ?? receipt['id']?.toString() ?? '')
+            .map((receipt) => receipt['id']?.toString() ?? '')
             .where((id) => id.isNotEmpty)
             .toSet();
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Selected ${_selectedReceiptIds.length} receipts from current page (fallback)'),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 3),
+          ),
+        );
       }
-    });
+    }
+  }
+
+
+  // Helper method to apply local filters (time filter and search filter)
+  List<Map<String, dynamic>> _applyLocalFiltersToReceipts(List<Map<String, dynamic>> receipts) {
+    List<Map<String, dynamic>> filtered = receipts;
+
+    // Only apply client-side search. All other filters (date, amount, category, tags)
+    // should be handled by the backend via query params for accuracy.
+    final searchQuery = _searchController.text.toLowerCase();
+    if (searchQuery.isNotEmpty) {
+      filtered = filtered.where((receipt) {
+        final merchant = (receipt['merchant'] ?? '').toLowerCase();
+        final category = (receipt['category'] ?? '').toLowerCase();
+        final amount = (receipt['amount'] ?? '').toString().toLowerCase();
+        final date = (receipt['receiptDate'] ?? '').toLowerCase();
+
+        return merchant.contains(searchQuery) ||
+            category.contains(searchQuery) ||
+            amount.contains(searchQuery) ||
+            date.contains(searchQuery);
+      }).toList();
+    }
+
+    return filtered;
+  }
+
+// UPDATED: Simplified export method with receiptIds instead of imageIds
+  void _exportSelectedReceipts() {
+    if (_selectedReceiptIds.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select at least one receipt to export'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    _exportReceipts(
+      format: _selectedFormat,
+      selectedIds: _selectedReceiptIds,
+    );
   }
 
   void _checkForCustomDateRange(String fromDate, String toDate) {
@@ -160,37 +510,181 @@ class _ReportsScreenState extends State<ReportsScreen> {
     }
   }
 
-  Future<void> _fetchReceipts() async {
-    setState(() {
-      _isLoading = true;
-    });
+  Future<void> _fetchReceipts({bool reset = false}) async {
+    if (reset) {
+      setState(() {
+        _isLoading = true;
+        _currentPage = 1;
+        savedReceipts.clear();
+        _filteredReceipts.clear();
+      });
+    } else {
+      setState(() {
+        _isLoadingMore = true;
+      });
+    }
 
     await _fetchSavedReceipts();
     _filterReceipts();
 
     setState(() {
       _isLoading = false;
+      _isLoadingMore = false;
     });
   }
 
+  // UPDATED: Now properly handles filtered total count from pagination response
   Future<void> _fetchSavedReceipts() async {
-    final url =
-        'https://manage-receipt-backend-bnl1.onrender.com/api/receipts/${widget.userId}';
     try {
-      final response = await http.get(Uri.parse(url));
+      final receiptProvider = Provider.of<ReceiptProvider>(context, listen: false);
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      final filters = receiptProvider.filters;
+
+      // Build query parameters
+      final Map<String, String> queryParams = {
+        'page': _currentPage.toString(),
+        'pageSize': _pageSize.toString(),
+      };
+
+      // Add filters to query parameters
+      if (filters['merchant'] != null && filters['merchant'].isNotEmpty) {
+        queryParams['merchant'] = filters['merchant'];
+      }
+
+      if (filters['categoryIds'] != null && filters['categoryIds'] is List) {
+        final categoryIds = filters['categoryIds'] as List;
+        if (categoryIds.isNotEmpty) {
+          queryParams['categoryIds'] = categoryIds.join(',');
+        }
+      } else if (filters['category'] != null && filters['category'].isNotEmpty) {
+        // Handle backward compatibility for single category
+        queryParams['category'] = filters['category'];
+      }
+
+      // Enhanced date filtering with validation
+      final dateFilters = _buildDateFilters(filters);
+      queryParams.addAll(dateFilters);
+
+      if (filters['minAmount'] != null && filters['minAmount'].isNotEmpty) {
+        queryParams['minAmount'] = filters['minAmount'];
+      }
+
+      if (filters['maxAmount'] != null && filters['maxAmount'].isNotEmpty) {
+        queryParams['maxAmount'] = filters['maxAmount'];
+      }
+
+      if (filters['tags'] != null && (filters['tags'] as List).isNotEmpty) {
+        queryParams['tags'] = (filters['tags'] as List).join(',');
+      }
+
+      // Build query string
+      final queryString = queryParams.entries
+          .map((e) => '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
+          .join('&');
+
+      final endpoint = '/receipts/${widget.userId}?$queryString';
+
+      debugPrint('Fetching receipts from: $endpoint');
+
+      // UPDATED: Using ApiService instead of direct HTTP call
+      final response = await ApiService.get(endpoint, token: userProvider.token);
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        List<Map<String, dynamic>> receipts = List<Map<String, dynamic>>.from(
-            data is List ? data : data['receipts'] ?? []);
 
+        List<Map<String, dynamic>> receipts = [];
+        Map<String, dynamic> pagination = {};
+
+        if (data is Map && data.containsKey('receipts')) {
+          // New paginated API response format
+          receipts = List<Map<String, dynamic>>.from(data['receipts'] ?? []);
+          // pagination can be null in new response
+          pagination = (data['pagination'] is Map) ? Map<String, dynamic>.from(data['pagination']) : {};
+
+          setState(() {
+            _totalCount = pagination['totalCount'] ?? 0;
+            _hasNextPage = pagination['hasNextPage'] ?? false;
+
+            // Prefer new totals structure if present
+            final filteredTotals = data['filteredReceipts'];
+            final totalTotals = data['totalReceipts'];
+
+            if (filteredTotals is Map) {
+              _filteredTotalReceipts = (filteredTotals['totalCount'] as num?)?.toInt() ?? _filteredTotalReceipts;
+              _totalAmount = (filteredTotals['totalAmount'] as num?)?.toDouble() ?? _totalAmount;
+              debugPrint('Using filtered totals from API: count=$_filteredTotalReceipts, amount=$_totalAmount');
+            } else {
+              // Fallback to pagination totalCount for filtered count
+              _filteredTotalReceipts = pagination['totalCount'] ?? 0;
+              // Legacy single totalAmount at root
+              if (data.containsKey('totalAmount')) {
+                _totalAmount = (data['totalAmount'] as num?)?.toDouble() ?? 0.0;
+                debugPrint('Using totalAmount from API root: $_totalAmount');
+              } else {
+                debugPrint('No totalAmount in API response, will calculate locally if needed');
+              }
+            }
+
+            // Get total user receipts only on first page load and when no filters are applied
+            if (_currentPage == 1) {
+              // Check if any filters are applied
+              final hasFilters = _hasAnyFiltersApplied();
+
+              if (!hasFilters) {
+                // No filters applied - prefer new totalReceipts if available otherwise pagination
+                if (totalTotals is Map) {
+                  _totalUserReceipts = (totalTotals['totalCount'] as num?)?.toInt() ?? (pagination['totalCount'] ?? 0);
+                } else {
+                  _totalUserReceipts = pagination['totalCount'] ?? 0;
+                }
+              } else {
+                // Filters are applied - fetch unfiltered total separately if we don't have it
+                if (_totalUserReceipts == 0) {
+                  // If new totals block exists, use it directly; else fetch
+                  if (totalTotals is Map) {
+                    _totalUserReceipts = (totalTotals['totalCount'] as num?)?.toInt() ?? 0;
+                  } else {
+                    _fetchTotalCountFromUnfilteredData();
+                  }
+                }
+              }
+            }
+          });
+
+          debugPrint('Pagination info: totalCount=${pagination['totalCount']}, hasFilters=${_hasAnyFiltersApplied()}');
+          debugPrint('Display totals: filtered=$_filteredTotalReceipts, unfiltered=$_totalUserReceipts, totalAmount=$_totalAmount');
+        } else {
+          // Fallback to old format
+          receipts = List<Map<String, dynamic>>.from(data is List ? data : []);
+
+          // For old format, count all receipts as total
+          if (_currentPage == 1) {
+            setState(() {
+              _totalUserReceipts = receipts.length;
+              _filteredTotalReceipts = receipts.length;
+              // For old format, calculate total amount locally
+              _totalAmount = receipts.fold(0.0, (sum, receipt) {
+                final amount = double.tryParse(receipt['amount']?.toString() ?? '0') ?? 0;
+                return sum + amount;
+              });
+            });
+          }
+        }
+
+        // Filter out unsaved receipts
+        receipts = receipts.where((receipt) => receipt['isSaved'] != false).toList();
+
+        // Sort receipts by receipt date (newest first)
         receipts.sort((a, b) {
-          DateTime? dateA = _parseDate(a['updatedAt']) ??
-              _parseDate(a['createdAt']) ??
-              _parseDate(a['receiptDate']);
+          DateTime? dateA = _parseDate(a['receiptDate']);
+          DateTime? dateB = _parseDate(b['receiptDate']);
 
-          DateTime? dateB = _parseDate(b['updatedAt']) ??
-              _parseDate(b['createdAt']) ??
-              _parseDate(b['receiptDate']);
+          if (dateA == null) {
+            dateA = _parseDate(a['updatedAt']) ?? _parseDate(a['createdAt']);
+          }
+          if (dateB == null) {
+            dateB = _parseDate(b['updatedAt']) ?? _parseDate(b['createdAt']);
+          }
 
           if (dateA == null && dateB == null) return 0;
           if (dateA == null) return 1;
@@ -199,18 +693,67 @@ class _ReportsScreenState extends State<ReportsScreen> {
           return dateB.compareTo(dateA);
         });
 
-        receipts =
-            receipts.where((receipt) => receipt['isSaved'] != false).toList();
-
         setState(() {
-          savedReceipts = receipts;
+          if (_currentPage == 1) {
+            savedReceipts = receipts;
+          } else {
+            savedReceipts.addAll(receipts);
+          }
         });
       } else {
-        debugPrint(
-            'Failed to load receipts: ${response.statusCode} - ${response.body}');
+        debugPrint('Failed to load receipts: ${response.statusCode} - ${response.body}');
       }
     } catch (e) {
       debugPrint("Error fetching receipts: $e");
+    }
+  }
+
+  // UPDATED: Helper method to check if any filters are applied
+  bool _hasAnyFiltersApplied() {
+    final receiptProvider = Provider.of<ReceiptProvider>(context, listen: false);
+    final filters = receiptProvider.filters;
+
+    return (filters['merchant'] != null && filters['merchant'].isNotEmpty) ||
+        (filters['fromDate'] != null && filters['fromDate'].isNotEmpty) ||
+        (filters['toDate'] != null && filters['toDate'].isNotEmpty) ||
+        (filters['minAmount'] != null && filters['minAmount'].isNotEmpty) ||
+        (filters['maxAmount'] != null && filters['maxAmount'].isNotEmpty) ||
+        (filters['categoryIds'] != null && (filters['categoryIds'] as List?)?.isNotEmpty == true) ||
+        (filters['tags'] != null && (filters['tags'] as List?)?.isNotEmpty == true) ||
+        _searchController.text.isNotEmpty ||
+        (_selectedTimeFilter != 'All' && _selectedTimeFilter != 'Custom');
+  }
+
+// UPDATED: Fetch total count by making one call without filters using ApiService
+  Future<void> _fetchTotalCountFromUnfilteredData() async {
+    try {
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      final endpoint = '/receipts/${widget.userId}?page=1&pageSize=1';
+
+      // UPDATED: Using ApiService instead of direct HTTP call
+      final response = await ApiService.get(endpoint, token: userProvider.token);
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+
+        if (data is Map && data.containsKey('pagination')) {
+          final pagination = data['pagination'] ?? {};
+          setState(() {
+            _totalUserReceipts = pagination['totalCount'] ?? 0;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint("Error fetching total count: $e");
+    }
+  }
+
+  Future<void> _loadMoreReceipts() async {
+    if (_hasNextPage && !_isLoadingMore) {
+      setState(() {
+        _currentPage++;
+      });
+      await _fetchReceipts();
     }
   }
 
@@ -228,161 +771,14 @@ class _ReportsScreenState extends State<ReportsScreen> {
       }
     }
   }
-
   void _filterReceipts() {
-    final receiptProvider =
-    Provider.of<ReceiptProvider>(context, listen: false);
-    List<Map<String, dynamic>> providerFilteredReceipts = savedReceipts;
-
-    final filters = receiptProvider.filters;
-
-    if (filters.isNotEmpty) {
-      providerFilteredReceipts = savedReceipts.where((receipt) {
-        if (filters['merchant'] != null && filters['merchant'].isNotEmpty) {
-          final merchant = (receipt['merchant'] ?? '').toLowerCase();
-          if (!merchant.contains(filters['merchant'].toLowerCase())) {
-            return false;
-          }
-        }
-
-        if (filters['fromDate'] != null && filters['fromDate'].isNotEmpty) {
-          try {
-            final receiptDate = _parseDate(receipt['receiptDate']);
-            final fromDate = DateTime.parse(filters['fromDate']);
-
-            if (receiptDate == null || receiptDate.isBefore(fromDate)) {
-              return false;
-            }
-
-            if (filters['toDate'] != null && filters['toDate'].isNotEmpty) {
-              final toDate = DateTime.parse(filters['toDate']);
-              final adjustedToDate = toDate.add(const Duration(days: 1));
-              if (receiptDate.isAfter(adjustedToDate)) {
-                return false;
-              }
-            }
-          } catch (e) {
-            debugPrint('Error parsing date: $e');
-          }
-        }
-
-        if (filters['minAmount'] != null && filters['minAmount'].isNotEmpty) {
-          try {
-            final receiptAmount =
-                double.tryParse(receipt['amount']?.toString() ?? '0') ?? 0;
-            final minAmount = double.tryParse(filters['minAmount']) ?? 0;
-
-            if (receiptAmount < minAmount) {
-              return false;
-            }
-          } catch (e) {
-            debugPrint('Error parsing min amount: $e');
-          }
-        }
-
-        if (filters['maxAmount'] != null && filters['maxAmount'].isNotEmpty) {
-          try {
-            final receiptAmount =
-                double.tryParse(receipt['amount']?.toString() ?? '0') ?? 0;
-            final maxAmount =
-                double.tryParse(filters['maxAmount']) ?? double.infinity;
-
-            if (receiptAmount > maxAmount) {
-              return false;
-            }
-          } catch (e) {
-            debugPrint('Error parsing max amount: $e');
-          }
-        }
-
-        return true;
-      }).toList();
-    }
-
-    List<Map<String, dynamic>> timeFilteredReceipts = [];
-    final now = DateTime.now();
-
-    if (_hasCustomDateRange) {
-      final fromDateStr = receiptProvider.filters['fromDate'];
-      final toDateStr = receiptProvider.filters['toDate'];
-
-      if (fromDateStr != null && toDateStr != null) {
-        try {
-          final fromDate = DateTime.parse(fromDateStr);
-          final toDate = DateTime.parse(toDateStr);
-
-          timeFilteredReceipts = providerFilteredReceipts.where((receipt) {
-            try {
-              final receiptDate = _parseDate(receipt['receiptDate']);
-              return receiptDate != null &&
-                  receiptDate
-                      .isAfter(fromDate.subtract(const Duration(days: 1))) &&
-                  receiptDate.isBefore(toDate.add(const Duration(days: 1)));
-            } catch (e) {
-              debugPrint('Error parsing date: $e');
-              return false;
-            }
-          }).toList();
-        } catch (e) {
-          debugPrint('Error parsing custom date range: $e');
-          timeFilteredReceipts = List.from(providerFilteredReceipts);
-        }
-      } else {
-        timeFilteredReceipts = List.from(providerFilteredReceipts);
-      }
-    } else if (_selectedTimeFilter == 'All') {
-      timeFilteredReceipts = List.from(providerFilteredReceipts);
-    } else {
-      DateTime startDate;
-      DateTime? endDate;
-
-      switch (_selectedTimeFilter) {
-        case 'Last week':
-          startDate = now.subtract(const Duration(days: 7));
-          endDate = now;
-          break;
-        case 'This Month':
-          startDate = DateTime(now.year, now.month, 1);
-          endDate = DateTime(now.year, now.month + 1, 1)
-              .subtract(const Duration(days: 1));
-          break;
-        case 'Last Month':
-          final lastMonth = now.month == 1 ? 12 : now.month - 1;
-          final year = now.month == 1 ? now.year - 1 : now.year;
-          startDate = DateTime(year, lastMonth, 1);
-          endDate = DateTime(now.year, now.month, 1)
-              .subtract(const Duration(days: 1));
-          break;
-        default:
-          startDate = DateTime(1900);
-          endDate = null;
-      }
-
-      timeFilteredReceipts = providerFilteredReceipts.where((receipt) {
-        try {
-          final receiptDate = _parseDate(receipt['receiptDate']);
-          if (receiptDate == null) return false;
-
-          if (endDate != null) {
-            return receiptDate
-                .isAfter(startDate.subtract(const Duration(days: 1))) &&
-                receiptDate.isBefore(endDate.add(const Duration(days: 1)));
-          } else {
-            return receiptDate
-                .isAfter(startDate.subtract(const Duration(days: 1)));
-          }
-        } catch (e) {
-          debugPrint('Error parsing date: $e');
-          return false;
-        }
-      }).toList();
-    }
+    // Backend returns already-filtered results (date, amount, tags, category).
+    // Here we only apply client-side search and then sort for stable ordering.
+    List<Map<String, dynamic>> baseReceipts = List.from(savedReceipts);
 
     final searchQuery = _searchController.text.toLowerCase();
-    if (searchQuery.isEmpty) {
-      _filteredReceipts = timeFilteredReceipts;
-    } else {
-      _filteredReceipts = timeFilteredReceipts.where((receipt) {
+    if (searchQuery.isNotEmpty) {
+      baseReceipts = baseReceipts.where((receipt) {
         final merchant = (receipt['merchant'] ?? '').toLowerCase();
         final category = (receipt['category'] ?? '').toLowerCase();
         final amount = (receipt['amount'] ?? '').toString().toLowerCase();
@@ -395,28 +791,59 @@ class _ReportsScreenState extends State<ReportsScreen> {
       }).toList();
     }
 
-    _totalAmount = _filteredReceipts.fold(0, (sum, receipt) {
-      final amount = double.tryParse(receipt['amount']?.toString() ?? '0') ?? 0;
-      return sum + amount;
+    _filteredReceipts = baseReceipts;
+
+    // Apply additional sorting to filtered receipts to ensure consistent ordering
+    _filteredReceipts.sort((a, b) {
+      DateTime? dateA = _parseDate(a['receiptDate']);
+      DateTime? dateB = _parseDate(b['receiptDate']);
+
+      // Fall back to other date fields if receiptDate is not available
+      if (dateA == null) {
+        dateA = _parseDate(a['updatedAt']) ?? _parseDate(a['createdAt']);
+      }
+      if (dateB == null) {
+        dateB = _parseDate(b['updatedAt']) ?? _parseDate(b['createdAt']);
+      }
+
+      // Handle null dates
+      if (dateA == null && dateB == null) return 0;
+      if (dateA == null) return 1;
+      if (dateB == null) return -1;
+
+      // Sort by most recent date first
+      return dateB.compareTo(dateA);
     });
+
+    // Only calculate total locally when a client-side search is active.
+    if (_currentPage == 1 && _searchController.text.isNotEmpty) {
+      final localTotal = _filteredReceipts.fold(0.0, (sum, receipt) {
+        final amount = double.tryParse(receipt['amount']?.toString() ?? '0') ?? 0;
+        return sum + amount;
+      });
+      _totalAmount = localTotal;
+      debugPrint('Updated total amount with client-side search: $_totalAmount');
+    }
   }
 
-  Future<void> _exportToExcel({bool selectedOnly = false}) async {
-    List<Map<String, dynamic>> receiptsToExport;
+  Future<void> _exportReceipts({
+    required ExportFormat format,
+    required Set<String> selectedIds,
+  }) async {
+    List<int> receiptIds = []; // Changed from imageIds to receiptIds
 
-    if (selectedOnly && _selectedReceiptIds.isNotEmpty) {
-      receiptsToExport = _filteredReceipts.where((receipt) {
-        final receiptId = receipt['imageId']?.toString() ?? receipt['id']?.toString() ?? '';
-        return _selectedReceiptIds.contains(receiptId);
-      }).toList();
-    } else {
-      receiptsToExport = _filteredReceipts;
-    }
+    // UPDATED: Convert selectedIds directly to integers for the payload
+    // This ensures all selected receipt IDs are included, not just those from current page
+    receiptIds = selectedIds
+        .map((id) => int.tryParse(id))
+        .where((id) => id != null)
+        .cast<int>()
+        .toList();
 
-    if (receiptsToExport.isEmpty) {
+    if (receiptIds.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(selectedOnly ? 'No receipts selected for export' : 'No receipts to export'),
+        const SnackBar(
+          content: Text('No receipts selected for export'),
           backgroundColor: Colors.orange,
         ),
       );
@@ -428,65 +855,67 @@ class _ReportsScreenState extends State<ReportsScreen> {
     });
 
     try {
-      // Determine date range for export
-      String fromDate = '';
-      String toDate = '';
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
 
-      final receiptProvider = Provider.of<ReceiptProvider>(context, listen: false);
-      final filters = receiptProvider.filters;
-
-      if (filters['fromDate'] != null && filters['toDate'] != null) {
-        fromDate = filters['fromDate'];
-        toDate = filters['toDate'];
-      } else {
-        // If no specific date range, use the range of filtered receipts
-        if (receiptsToExport.isNotEmpty) {
-          final dates = receiptsToExport
-              .map((r) => _parseDate(r['receiptDate']))
-              .where((d) => d != null)
-              .cast<DateTime>()
-              .toList();
-
-          if (dates.isNotEmpty) {
-            dates.sort();
-            fromDate = dates.first.toIso8601String().split('T')[0];
-            toDate = dates.last.toIso8601String().split('T')[0];
-          } else {
-            // Fallback to current month
-            final now = DateTime.now();
-            fromDate = DateTime(now.year, now.month, 1).toIso8601String().split('T')[0];
-            toDate = DateTime(now.year, now.month + 1, 0).toIso8601String().split('T')[0];
-          }
-        }
-      }
-
-      final exportData = {
+      // UPDATED: Changed payload structure to use receiptIds instead of imageIds
+      final exportRequestBody = {
         'userId': widget.userId,
-        'fromDate': fromDate,
-        'toDate': toDate,
-        'selectedOnly': selectedOnly,
-        'selectedIds': selectedOnly ? _selectedReceiptIds.toList() : null,
+        'receiptIds': receiptIds, // Changed from 'imageIds' to 'receiptIds'
+        'format': format == ExportFormat.excel ? 'excel' : 'pdf',
       };
 
-      debugPrint('Exporting with data: $exportData');
+      debugPrint('Export request body: ${json.encode(exportRequestBody)}');
+      debugPrint('Total receipt IDs to export: ${receiptIds.length}');
 
-      final response = await http.post(
-        Uri.parse('https://manage-receipt-backend-bnl1.onrender.com/api/receipts/export'),
-        headers: {
-          'Content-Type': 'application/json',
+      // UPDATED: Using the correct endpoint /receipts/exportRequest
+      final response = await ApiService.post(
+        '/receipts/export', // Changed from '/receipts/export'
+        body: exportRequestBody,
+        token: userProvider.token,
+        additionalHeaders: {
+          'Accept': 'application/octet-stream',
         },
-        body: json.encode(exportData),
       );
 
       debugPrint('Export response status: ${response.statusCode}');
+      debugPrint('Export response headers: ${response.headers}');
 
       if (response.statusCode == 200) {
-        final Uint8List excelBytes = response.bodyBytes;
-        debugPrint('Excel file size: ${excelBytes.length} bytes');
+        final Uint8List fileBytes = response.bodyBytes;
+        debugPrint('${format == ExportFormat.excel ? 'Excel' : 'PDF'} file size: ${fileBytes.length} bytes');
 
-        await _saveExcelFile(excelBytes, fromDate, toDate, selectedOnly);
+        // Validate file content
+        if (fileBytes.isEmpty) {
+          throw Exception('Received empty file from server');
+        }
+
+        await _saveAndShareFile(fileBytes, format);
+
+        // Exit selection mode after successful export
+        setState(() {
+          _isSelectionMode = false;
+          _selectedReceiptIds.clear();
+          _isExporting = false; // Reset exporting state after successful export
+        });
       } else {
-        throw Exception('Export failed with status: ${response.statusCode}\nResponse: ${response.body}');
+        // Enhanced error handling
+        String errorMessage = 'Export failed with status: ${response.statusCode}';
+
+        try {
+          final errorBody = json.decode(response.body);
+          if (errorBody['message'] != null) {
+            errorMessage = errorBody['message'];
+          } else if (errorBody['error'] != null) {
+            errorMessage = errorBody['error'];
+          }
+        } catch (e) {
+          // If response body is not JSON, use the raw body
+          if (response.body.isNotEmpty) {
+            errorMessage += '\nResponse: ${response.body}';
+          }
+        }
+
+        throw Exception(errorMessage);
       }
     } catch (e) {
       debugPrint('Export error: $e');
@@ -496,11 +925,16 @@ class _ReportsScreenState extends State<ReportsScreen> {
             content: Text('Export failed: ${e.toString()}'),
             backgroundColor: Colors.red,
             duration: const Duration(seconds: 5),
+            action: SnackBarAction(
+              label: 'Retry',
+              textColor: Colors.white,
+              onPressed: () => _exportReceipts(format: format, selectedIds: selectedIds),
+            ),
           ),
         );
       }
     } finally {
-      if (mounted) {
+      if (mounted && _isExporting) {
         setState(() {
           _isExporting = false;
         });
@@ -508,95 +942,89 @@ class _ReportsScreenState extends State<ReportsScreen> {
     }
   }
 
-  Future<void> _saveExcelFile(Uint8List bytes, String fromDate, String toDate, bool selectedOnly) async {
+  /// UPDATED: Simplified save and share file method
+  Future<void> _saveAndShareFile(
+      Uint8List bytes,
+      ExportFormat format,
+      ) async {
     try {
       final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-      final prefix = selectedOnly ? 'selected_receipts' : 'receipts';
-      final filename = '${prefix}_${fromDate}_to_${toDate}_$timestamp.xlsx';
+      final extension = format == ExportFormat.excel ? 'xlsx' : 'pdf';
+      final filename = 'receipts_export_$timestamp.$extension';
+
+      // Use app-specific directory (no permissions required)
+      Directory directory;
 
       if (Platform.isAndroid) {
-        final status = await Permission.storage.request();
-        if (!status.isGranted) {
-          final manageStatus = await Permission.manageExternalStorage.request();
-          if (!manageStatus.isGranted) {
-            throw Exception('Storage permission denied');
-          }
+        // For Android, use app-specific external files directory
+        directory = await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
+
+        // Create a Downloads subfolder for better organization
+        final downloadsDir = Directory('${directory.path}/Downloads');
+        if (!await downloadsDir.exists()) {
+          await downloadsDir.create(recursive: true);
         }
-
-        Directory? directory;
-        final possiblePaths = [
-          '/storage/emulated/0/Download',
-          '/storage/emulated/0/Downloads',
-          '/sdcard/Download',
-          '/sdcard/Downloads',
-        ];
-
-        for (final path in possiblePaths) {
-          final testDir = Directory(path);
-          if (await testDir.exists()) {
-            directory = testDir;
-            break;
-          }
-        }
-
-        directory ??= await getExternalStorageDirectory();
-
-        if (directory == null) {
-          throw Exception('Could not access storage directory');
-        }
-
-        final file = File('${directory.path}/$filename');
-        await file.writeAsBytes(bytes);
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Excel file saved: $filename'),
-              backgroundColor: const Color(0xFF7E5EFD),
-              duration: const Duration(seconds: 4),
-              action: SnackBarAction(
-                label: 'Share',
-                textColor: Colors.white,
-                onPressed: () => _shareFile(file.path),
-              ),
-            ),
-          );
-        }
+        directory = downloadsDir;
       } else if (Platform.isIOS) {
-        final directory = await getApplicationDocumentsDirectory();
-        final file = File('${directory.path}/$filename');
-        await file.writeAsBytes(bytes);
-
-        await _shareFile(file.path);
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Excel file ready to share'),
-              backgroundColor: Color(0xFF7E5EFD),
-            ),
-          );
-        }
+        // For iOS, use documents directory
+        directory = await getApplicationDocumentsDirectory();
       } else {
-        final directory = await getApplicationDocumentsDirectory();
-        final file = File('${directory.path}/$filename');
-        await file.writeAsBytes(bytes);
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Excel file saved: $filename'),
-              backgroundColor: const Color(0xFF7E5EFD),
-            ),
-          );
-        }
+        // For other platforms
+        directory = await getApplicationDocumentsDirectory();
       }
-    } catch (e) {
-      debugPrint('Save file error: $e');
+
+      final file = File('${directory.path}/$filename');
+      await file.writeAsBytes(bytes);
+
+      debugPrint('File saved to: ${file.path}');
+
+      // Verify file was written correctly
+      final savedFileSize = await file.length();
+      if (savedFileSize != bytes.length) {
+        throw Exception('File save verification failed: expected ${bytes.length} bytes, got $savedFileSize bytes');
+      }
+
+      // Always share the file immediately after saving
+      await _shareFile(file.path, filename);
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to save file: ${e.toString()}'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('${format == ExportFormat.excel ? 'Excel' : 'PDF'} file exported successfully!'),
+                Text(
+                  'File: $filename',
+                  style: const TextStyle(fontSize: 12, color: Colors.white70),
+                ),
+                Text(
+                  'Size: ${(bytes.length / 1024).toStringAsFixed(1)} KB',
+                  style: const TextStyle(fontSize: 12, color: Colors.white70),
+                ),
+                const Text(
+                  'The file has been shared. You can save it to your preferred location.',
+                  style: TextStyle(fontSize: 12, color: Colors.white70),
+                ),
+              ],
+            ),
+            backgroundColor: const Color(0xFF7E5EFD),
+            duration: const Duration(seconds: 6),
+            action: SnackBarAction(
+              label: 'Share Again',
+              textColor: Colors.white,
+              onPressed: () => _shareFile(file.path, filename),
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Save and share file error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to export file: ${e.toString()}'),
             backgroundColor: Colors.red,
             duration: const Duration(seconds: 5),
           ),
@@ -605,15 +1033,17 @@ class _ReportsScreenState extends State<ReportsScreen> {
     }
   }
 
-  Future<void> _shareFile(String filePath) async {
+  /// Share file using the system share dialog
+  Future<void> _shareFile(String filePath, String filename) async {
     try {
       await Share.shareXFiles(
         [XFile(filePath)],
-        text: 'Receipt Export',
+        text: 'Receipt Export - $filename',
         subject: 'Exported Receipts',
       );
     } catch (e) {
       debugPrint('Share file error: $e');
+      // Don't show error to user for sharing failures as it's not critical
     }
   }
 
@@ -629,7 +1059,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
       _searchController.clear();
     });
 
-    _filterReceipts();
+    _fetchReceipts(reset: true);
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
@@ -650,8 +1080,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
         (filters['minAmount'] != null && filters['minAmount'].isNotEmpty) ||
         (filters['maxAmount'] != null && filters['maxAmount'].isNotEmpty) ||
         (filters['categoryIds'] != null && (filters['categoryIds'] as List?)?.isNotEmpty == true) ||
+        (filters['tags'] != null && (filters['tags'] as List?)?.isNotEmpty == true) ||
         _searchController.text.isNotEmpty ||
-        _selectedTimeFilter != 'All';
+        (_selectedTimeFilter != 'All' && _selectedTimeFilter != 'Custom'); // Exclude 'Custom' if it's derived from fromDate/toDate
   }
 
   Widget _buildActiveFiltersIndicator() {
@@ -693,7 +1124,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
         'Merchant: ${filters['merchant']}',
             () {
           receiptProvider.updateFilter('merchant', null);
-          _filterReceipts();
+          _fetchReceipts(reset: true);
         },
       ));
     }
@@ -713,12 +1144,26 @@ class _ReportsScreenState extends State<ReportsScreen> {
           receiptProvider.updateFilter('categories', null);
           receiptProvider.updateFilter('category', null);
           receiptProvider.updateFilter('categoryId', null);
-          _filterReceipts();
+          _fetchReceipts(reset: true);
         },
       ));
     }
 
-    // Date range filter (consolidated) - only show if there's a custom date range
+    // Tags filter
+    if (filters['tags'] != null && (filters['tags'] as List?)?.isNotEmpty == true) {
+      final tags = filters['tags'] as List;
+      String displayText = tags.length == 1 ? 'Tag: ${tags.first}' : 'Tags: ${tags.length} selected';
+
+      filterChips.add(_buildFilterChip(
+        displayText,
+            () {
+          receiptProvider.updateFilter('tags', null);
+          _fetchReceipts(reset: true);
+        },
+      ));
+    }
+
+    // Date range filter
     if (filters['fromDate'] != null && filters['fromDate'].isNotEmpty) {
       String dateText = '';
       try {
@@ -744,13 +1189,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
             _hasCustomDateRange = false;
             _customDateRangeText = '';
             _selectedTimeFilter = 'All';
-            _filterReceipts();
           });
+          _fetchReceipts(reset: true);
         },
       ));
     }
 
-    // Amount filter (consolidated)
+    // Amount filter
     if ((filters['minAmount'] != null && filters['minAmount'].isNotEmpty) ||
         (filters['maxAmount'] != null && filters['maxAmount'].isNotEmpty)) {
       String amountText = '';
@@ -770,7 +1215,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
             () {
           receiptProvider.updateFilter('minAmount', null);
           receiptProvider.updateFilter('maxAmount', null);
-          _filterReceipts();
+          _fetchReceipts(reset: true);
         },
       ));
     }
@@ -871,32 +1316,80 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final isSelected = _selectedTimeFilter == title;
 
     return GestureDetector(
-      onTap: () {
-        setState(() {
-          _selectedTimeFilter = title;
-          if (title != 'Custom') {
+        onTap: () {
+          final receiptProvider = Provider.of<ReceiptProvider>(context, listen: false);
+          final now = DateTime.now();
+          DateTime? from;
+          DateTime? to;
+
+          if (title == 'All') {
+            // Clear server-side date filters
+            receiptProvider.updateFilter('fromDate', null);
+            receiptProvider.updateFilter('toDate', null);
+            setState(() {
+              _selectedTimeFilter = title;
+              _hasCustomDateRange = false;
+              _customDateRangeText = '';
+            });
+            _fetchReceipts(reset: true);
+            return;
+          }
+
+          switch (title) {
+            case 'Last week':
+              from = now.subtract(const Duration(days: 7));
+              to = now;
+              break;
+            case 'Year to Date':
+              from = DateTime(now.year, 1, 1);
+              to = now;
+              break;
+            case 'This Month':
+              from = DateTime(now.year, now.month, 1);
+              to = DateTime(now.year, now.month + 1, 1).subtract(const Duration(days: 1));
+              break;
+            case 'Last Month':
+              final lastMonth = now.month == 1 ? 12 : now.month - 1;
+              final year = now.month == 1 ? now.year - 1 : now.year;
+              from = DateTime(year, lastMonth, 1);
+              to = DateTime(now.year, now.month, 1).subtract(const Duration(days: 1));
+              break;
+            default:
+              from = null;
+              to = null;
+          }
+
+          if (from != null && to != null) {
+            final fromStr = DateFormat('yyyy-MM-dd').format(from);
+            final toStr = DateFormat('yyyy-MM-dd').format(to);
+            receiptProvider.updateFilter('fromDate', fromStr);
+            receiptProvider.updateFilter('toDate', toStr);
+          }
+
+          setState(() {
+            _selectedTimeFilter = title;
             _hasCustomDateRange = false;
             _customDateRangeText = '';
-          }
-          _filterReceipts();
-        });
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFFE8E6FF) : Colors.transparent,
-          borderRadius: BorderRadius.circular(20),
-          border:
-          isSelected ? Border.all(color: const Color(0xFF7E5EFD)) : null,
-        ),
-        child: Text(
-          title,
-          style: TextStyle(
-            color: isSelected ? const Color(0xFF7E5EFD) : Colors.grey,
-            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+          });
+
+          _fetchReceipts(reset: true);
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: isSelected ? const Color(0xFFE8E6FF) : Colors.transparent,
+            borderRadius: BorderRadius.circular(20),
+            border:
+            isSelected ? Border.all(color: const Color(0xFF7E5EFD)) : null,
           ),
-        ),
-      ),
+          child: Text(
+            title,
+            style: TextStyle(
+              color: isSelected ? const Color(0xFF7E5EFD) : Colors.grey,
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+        )
     );
   }
 
@@ -920,7 +1413,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 IconButton(
                   icon: const Icon(Icons.arrow_back, color: Colors.white),
                   onPressed: () {
-                    Navigator.pop(context);
+                    // Return true to indicate potential changes were made
+                    Navigator.pop(context, _hasChanges);
                   },
                 ),
                 const Expanded(
@@ -935,15 +1429,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                     ),
                   ),
                 ),
-                // Selection mode toggle
-                IconButton(
-                  icon: Icon(
-                    _isSelectionMode ? Icons.close : Icons.checklist,
-                    color: Colors.white,
-                  ),
-                  onPressed: _toggleSelectionMode,
-                  tooltip: _isSelectionMode ? 'Exit Selection' : 'Select Receipts',
-                ),
+                // Single export button that toggles selection mode
                 Container(
                   margin: const EdgeInsets.only(right: 16),
                   width: 40,
@@ -988,13 +1474,48 @@ class _ReportsScreenState extends State<ReportsScreen> {
                       color: Color(0xFF7E5EFD),
                     ),
                   ),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: _selectedFormat == ExportFormat.excel
+                          ? Colors.green.shade100
+                          : Colors.red.shade100,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      _selectedFormat == ExportFormat.excel ? 'Excel' : 'PDF',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: _selectedFormat == ExportFormat.excel
+                            ? Colors.green.shade700
+                            : Colors.red.shade700,
+                      ),
+                    ),
+                  ),
                   const Spacer(),
                   TextButton(
                     onPressed: _selectAllReceipts,
-                    child: Text(
-                      _selectedReceiptIds.length == _filteredReceipts.length ? 'Deselect All' : 'Select All',
-                      style: const TextStyle(
+                    child: const Text(
+                      'Select All',
+                      style: TextStyle(
                         color: Color(0xFF7E5EFD),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      setState(() {
+                        _isSelectionMode = false;
+                        _selectedReceiptIds.clear();
+                      });
+                    },
+                    child: const Text(
+                      'Cancel',
+                      style: TextStyle(
+                        color: Colors.grey,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -1059,7 +1580,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                       receiptProvider.filters['fromDate'],
                                       receiptProvider.filters['toDate']);
                                 }
-                                _fetchReceipts();
+                                _fetchReceipts(reset: true);
                               });
                             },
                           ),
@@ -1073,20 +1594,22 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
                   // Time filter tabs
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                    padding: const EdgeInsets.symmetric(horizontal: 10.0),
                     child: SingleChildScrollView(
                       scrollDirection: Axis.horizontal,
                       child: Row(
                         children: [
                           _buildTimeFilterTab('All'),
-                          const SizedBox(width: 8),
+                          const SizedBox(width: 2),
                           _buildTimeFilterTab('Last week'),
-                          const SizedBox(width: 8),
+                          const SizedBox(width: 2),
+                          _buildTimeFilterTab('Year to Date'),
+                          const SizedBox(width: 2),
                           _buildTimeFilterTab('This Month'),
-                          const SizedBox(width: 8),
+                          const SizedBox(width: 2),
                           _buildTimeFilterTab('Last Month'),
                           if (_hasCustomDateRange) ...[
-                            const SizedBox(width: 8),
+                            const SizedBox(width: 2),
                             _buildTimeFilterTab('Custom'),
                           ],
                         ],
@@ -1130,104 +1653,106 @@ class _ReportsScreenState extends State<ReportsScreen> {
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                Text(
-                                  'Receipts: ${_filteredReceipts.length}',
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    color: Colors.grey,
-                                  ),
-                                ),
-                                Row(
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    if (_isSelectionMode && _selectedReceiptIds.isNotEmpty) ...[
-                                      GestureDetector(
-                                        onTap: _isExporting ? null : () => _exportToExcel(selectedOnly: true),
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 12,
-                                            vertical: 6,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: Colors.green[600],
-                                            borderRadius: BorderRadius.circular(16),
-                                          ),
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              if (_isExporting)
-                                                const SizedBox(
-                                                  width: 12,
-                                                  height: 12,
-                                                  child: CircularProgressIndicator(
-                                                    color: Colors.white,
-                                                    strokeWidth: 2,
-                                                  ),
-                                                )
-                                              else
-                                                const Icon(
-                                                  Icons.download,
-                                                  size: 16,
-                                                  color: Colors.white,
-                                                ),
-                                              const SizedBox(width: 4),
-                                              Text(
-                                                _isExporting ? 'Exporting...' : 'Export Selected',
-                                                style: const TextStyle(
-                                                  fontSize: 12,
-                                                  color: Colors.white,
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                    ],
-                                    GestureDetector(
-                                      onTap: _isExporting ? null : () => _exportToExcel(),
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 12,
-                                          vertical: 6,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFF7E5EFD),
-                                          borderRadius: BorderRadius.circular(16),
-                                        ),
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            if (_isExporting)
-                                              const SizedBox(
-                                                width: 12,
-                                                height: 12,
-                                                child: CircularProgressIndicator(
-                                                  color: Colors.white,
-                                                  strokeWidth: 2,
-                                                ),
-                                              )
-                                            else
-                                              const Icon(
-                                                Icons.download,
-                                                size: 16,
-                                                color: Colors.white,
-                                              ),
-                                            const SizedBox(width: 4),
-                                            Text(
-                                              _isExporting ? 'Exporting...' : 'Export All',
-                                              style: const TextStyle(
-                                                fontSize: 12,
-                                                color: Colors.white,
-                                                fontWeight: FontWeight.w500,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
+                                    // UPDATED: Show filtered total when filters are applied, otherwise show total user receipts
+                                    Text(
+                                      _hasAnyFiltersApplied()
+                                          ? 'Filtered Receipts: $_filteredTotalReceipts'
+                                          : 'Total Receipts: $_totalUserReceipts',
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        color: Colors.grey,
                                       ),
                                     ),
+                                    // Show both totals when filters are applied and we have unfiltered count
+                                    if (_hasAnyFiltersApplied() && _totalUserReceipts > 0 && _totalUserReceipts != _filteredTotalReceipts)
+                                      Text(
+                                        'Total Receipts: $_totalUserReceipts',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.grey.shade600,
+                                        ),
+                                      ),
+                                    if (_selectedReceiptIds.isNotEmpty)
+                                      Text(
+                                        'Selected: ${_selectedReceiptIds.length}',
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          color: Color(0xFF7E5EFD),
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
                                   ],
                                 ),
+                                // Export button behavior
+                                if (_isSelectionMode)
+                                  GestureDetector(
+                                    onTap: _isExporting ? null : _exportSelectedReceipts,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 16,
+                                        vertical: 8,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF7E5EFD),
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(
+                                            Icons.file_download,
+                                            size: 18,
+                                            color: Colors.white,
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                            'Export Selected',
+                                            style: const TextStyle(
+                                              fontSize: 14,
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  )
+                                else
+                                  GestureDetector(
+                                    onTap: _isExporting ? null : _toggleSelectionMode,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 16,
+                                        vertical: 8,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF7E5EFD),
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      child: const Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            Icons.file_download,
+                                            size: 18,
+                                            color: Colors.white,
+                                          ),
+                                          SizedBox(width: 6),
+                                          Text(
+                                            'Export',
+                                            style: TextStyle(
+                                              fontSize: 14,
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
                               ],
                             ),
                           ],
@@ -1235,7 +1760,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                       ),
                     ),
 
-                  // Receipts list
+                  // Receipts list with updated layout
                   Expanded(
                     child: _isLoading
                         ? const Center(
@@ -1274,33 +1799,68 @@ class _ReportsScreenState extends State<ReportsScreen> {
                       ),
                     )
                         : RefreshIndicator(
-                      onRefresh: _fetchReceipts,
+                      onRefresh: () => _fetchReceipts(reset: true),
                       color: const Color(0xFF7E5EFD),
                       child: ListView.builder(
-                        itemCount: _filteredReceipts.length,
+                        itemCount: _filteredReceipts.length + (_hasNextPage ? 1 : 0),
                         padding: const EdgeInsets.only(
                           left: 16,
                           right: 16,
                           bottom: 16,
                         ),
                         itemBuilder: (context, index) {
+                          // Load more button
+                          if (index == _filteredReceipts.length) {
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 16.0),
+                              child: Center(
+                                child: _isLoadingMore
+                                    ? const CircularProgressIndicator(
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                      Color(0xFF7E5EFD)),
+                                )
+                                    : ElevatedButton(
+                                  onPressed: _loadMoreReceipts,
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF7E5EFD),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(20),
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 32, vertical: 12),
+                                  ),
+                                  child: const Text(
+                                    'Load More',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+
                           final receipt = _filteredReceipts[index];
-                          // FIXED: Use the helper method to get correct image URL
                           final imageUrl = _getReceiptImageUrl(receipt);
                           final merchant = receipt['merchant'] ?? 'Unknown';
                           final amount = receipt['amount']?.toString() ?? '0';
                           final category = receipt['category']?.toString() ?? 'Uncategorized';
                           final isPdf = _isPdfReceipt(receipt);
-                          final isManual = receipt['isManual'] == true || imageUrl.contains('placeholder') || imageUrl.contains('Manual+Receipt');
-                          final receiptId = receipt['imageId']?.toString() ?? receipt['id']?.toString() ?? '';
+                          final isManual = _isManualReceipt(receipt);
+                          // UPDATED: Use 'id' field for receipt selection
+                          final receiptId = receipt['id']?.toString() ?? '';
                           final isSelected = _selectedReceiptIds.contains(receiptId);
+                          final hasReminder = receipt['hasReminder'] ?? false; // Use API flag
+                          final hasSplit = receipt['hasSplitBill'] ?? false; // Use API flag
 
                           String formattedDate = 'No date';
                           if (receipt['receiptDate'] != null) {
                             try {
                               final DateTime? date = _parseDate(receipt['receiptDate']);
                               if (date != null) {
-                                formattedDate = DateFormat('MMMM d, yyyy').format(date);
+                                formattedDate = DateFormat('MMM d, yyyy').format(date);
                               }
                             } catch (e) {
                               debugPrint('Error parsing date: $e');
@@ -1310,24 +1870,100 @@ class _ReportsScreenState extends State<ReportsScreen> {
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 12.0),
                             child: GestureDetector(
-                              onTap: () {
+                              onTap: () async {
                                 if (_isSelectionMode) {
                                   _toggleReceiptSelection(receiptId);
                                 } else {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) => ReceiptDetailsScreen(
-                                        receipt: receipt,
-                                        imageUrl: imageUrl, // FIXED: Use the corrected imageUrl
-                                        userId: widget.userId,
-                                        imageId: receipt['imageId']?.toString() ?? '',
-                                        isNewReceipt: false,
-                                        isPdf: isPdf,
-                                        isManualReceipt: isManual,
+                                  // Show loading indicator
+                                  showDialog(
+                                    context: context,
+                                    barrierDismissible: false,
+                                    builder: (context) => const Center(
+                                      child: CircularProgressIndicator(
+                                        valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF7E5EFD)),
                                       ),
                                     ),
-                                  ).then((_) => _fetchReceipts());
+                                  );
+
+                                  try {
+                                    // Get token from UserProvider
+                                    final userProvider = Provider.of<UserProvider>(context, listen: false);
+                                    
+                                    // Fetch fresh receipt details from API
+                                    final response = await ApiService.get(
+                                      '/receipts/details/$receiptId?userId=${widget.userId}',
+                                      token: userProvider.token,
+                                    );
+
+                                    // Close loading indicator
+                                    if (mounted) Navigator.pop(context);
+
+                                    if (response.statusCode == 200) {
+                                      final data = json.decode(response.body);
+                                      final freshReceipt = data['receipt'] ?? data;
+
+                                      // Decrypt image URL
+                                      final encryptedImageLink = freshReceipt['imageLink'] as String?;
+                                      String decryptedImageUrl = imageUrl; // fallback to list data
+                                      if (encryptedImageLink != null) {
+                                        final decrypted = EncryptionHelper.decryptUrl(encryptedImageLink);
+                                        if (decrypted != null) {
+                                          decryptedImageUrl = decrypted;
+                                          freshReceipt['decryptedImageLink'] = decryptedImageUrl;
+                                          debugPrint('🔓 Reports - Decrypted image URL: $decryptedImageUrl');
+                                        }
+                                      }
+
+                                      final isPdfFresh = decryptedImageUrl.toLowerCase().endsWith('.pdf');
+                                      final isManualFresh = _isManualReceipt(freshReceipt);
+
+                                      // Navigate to receipt details and handle result
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => ReceiptDetailsScreen(
+                                            receipt: freshReceipt,
+                                            imageUrl: decryptedImageUrl,
+                                            userId: widget.userId,
+                                            imageId: freshReceipt['imageId']?.toString() ?? '',
+                                            isNewReceipt: false,
+                                            isPdf: isPdfFresh,
+                                            isManualReceipt: isManualFresh,
+                                          ),
+                                        ),
+                                      ).then((result) {
+                                        // Track if changes were made and refresh if needed
+                                        if (result == true) {
+                                          setState(() {
+                                            _hasChanges = true;
+                                          });
+                                          _fetchReceipts(reset: true);
+                                        }
+                                        // If result is null or false, don't refresh (no changes made)
+                                      });
+                                    } else {
+                                      // API failed, show error
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('Failed to load receipt details. Please try again.'),
+                                          backgroundColor: Colors.red,
+                                        ),
+                                      );
+                                    }
+                                  } catch (e) {
+                                    // Close loading indicator if still showing
+                                    if (mounted && Navigator.canPop(context)) {
+                                      Navigator.pop(context);
+                                    }
+                                    
+                                    debugPrint('Error fetching receipt details: $e');
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Failed to load receipt details. Please try again.'),
+                                        backgroundColor: Colors.red,
+                                      ),
+                                    );
+                                  }
                                 }
                               },
                               child: Container(
@@ -1345,7 +1981,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                   padding: const EdgeInsets.all(16.0),
                                   child: Row(
                                     children: [
-                                      // Selection checkbox
+                                      // Selection icon - now using green plus icon
                                       if (_isSelectionMode) ...[
                                         Container(
                                           width: 24,
@@ -1360,105 +1996,120 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                           ),
                                           child: isSelected
                                               ? const Icon(
-                                            Icons.check,
+                                            Icons.add,
                                             size: 16,
                                             color: Colors.white,
                                           )
-                                              : null,
+                                              : const Icon(
+                                            Icons.add,
+                                            size: 16,
+                                            color: Colors.grey,
+                                          ),
                                         ),
                                         const SizedBox(width: 12),
                                       ],
 
-                                      // Thumbnail with icons only
-                                      Container(
-                                        width: 60,
-                                        height: 60,
-                                        decoration: BoxDecoration(
-                                          border: Border.all(color: Colors.grey.shade300),
-                                          borderRadius: BorderRadius.circular(8),
-                                          color: Colors.grey.shade100,
-                                        ),
-                                        child: Center(
-                                          child: isManual
-                                              ? const Icon(
-                                            Icons.edit_note,
-                                            size: 36,
-                                            color: Color(0xFF7E5EFD),
-                                          )
-                                              : isPdf
-                                              ? Icon(
-                                            Icons.picture_as_pdf,
-                                            size: 36,
-                                            color: Colors.red[400],
-                                          )
-                                              : const Icon(
-                                            Icons.receipt,
-                                            size: 36,
-                                            color: Color(0xFF7E5EFD),
-                                          ),
-                                        ),
+                                      // Icon on the left: merchant/category-based avatar
+                                      Builder(
+                                        builder: (context) {
+                                          final brandIcon = getMerchantIcon(merchant);
+                                          final brandColor = getMerchantColor(merchant);
+                                          final emoji = getMerchantEmoji(merchant) ?? getCategoryEmoji(category);
+                                          final icon = brandIcon ?? getCategoryIcon(category);
+                                          final color = brandColor ?? getCategoryColor(category);
+                                          if (emoji != null) {
+                                            return Text(
+                                              emoji,
+                                              style: const TextStyle(fontSize: 24),
+                                            );
+                                          }
+                                          return CircleAvatar(
+                                            radius: 24,
+                                            backgroundColor: color.withOpacity(0.15),
+                                            child: Icon(icon, size: 24, color: color),
+                                          );
+                                        },
                                       ),
                                       const SizedBox(width: 16),
 
-                                      // Receipt details
+                                      // Middle section - Merchant name and category
                                       Expanded(
+                                        flex: 1,
                                         child: Column(
                                           crossAxisAlignment: CrossAxisAlignment.start,
                                           children: [
+                                            // Merchant name with overflow protection
+                                            Text(
+                                              merchant,
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 16,
+                                                color: Colors.black87,
+                                              ),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                            const SizedBox(height: 4),
+                                            // Category with overflow protection
                                             Row(
                                               children: [
+                                                // Category
                                                 Expanded(
                                                   child: Text(
-                                                    merchant,
+                                                    category,
                                                     style: const TextStyle(
-                                                      fontWeight: FontWeight.bold,
-                                                      fontSize: 16,
+                                                      fontSize: 14,
+                                                      color: Color(0xFF7E5EFD),
+                                                      fontWeight: FontWeight.w500,
                                                     ),
                                                     maxLines: 1,
                                                     overflow: TextOverflow.ellipsis,
                                                   ),
                                                 ),
-                                                if (isManual)
-                                                  Container(
-                                                    margin: const EdgeInsets.only(left: 8),
-                                                    padding: const EdgeInsets.symmetric(
-                                                      horizontal: 8,
-                                                      vertical: 4,
-                                                    ),
-                                                    decoration: BoxDecoration(
-                                                      color: const Color(0xFF7E5EFD),
-                                                      borderRadius: BorderRadius.circular(12),
-                                                    ),
-                                                    child: const Text(
-                                                      'Manual',
-                                                      style: TextStyle(
-                                                        fontSize: 10,
-                                                        color: Colors.white,
-                                                        fontWeight: FontWeight.w500,
-                                                      ),
-                                                    ),
+                                                // Reminder/Split Icons
+                                                if (hasReminder || hasSplit)
+                                                  Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      if (hasReminder) ...[
+                                                        const Icon(
+                                                          Icons.notifications_active,
+                                                          size: 16,
+                                                          color: Colors.green,
+                                                        ),
+                                                        if (hasSplit) const SizedBox(width: 4),
+                                                      ],
+                                                      if (hasSplit)
+                                                        const Icon(
+                                                          Icons.call_split,
+                                                          size: 16,
+                                                          color: Colors.orange,
+                                                        ),
+                                                    ],
                                                   ),
                                               ],
                                             ),
-                                            const SizedBox(height: 8),
-                                            Row(
-                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                              children: [
-                                                Text(
-                                                  "$currencySymbol $amount",
-                                                  style: const TextStyle(
-                                                    fontSize: 16,
-                                                    fontWeight: FontWeight.w500,
-                                                  ),
-                                                ),
-                                                Text(
-                                                  category,
-                                                  style: const TextStyle(
-                                                    fontWeight: FontWeight.w500,
-                                                    color: Color(0xFF7E5EFD),
-                                                  ),
-                                                ),
-                                              ],
+
+                                          ],
+                                        ),
+                                      ),
+
+                                      // Right section - Amount, date, and icons
+                                      // Right section - only amount and date
+                                      Expanded(
+                                        flex: 1,
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.end,
+                                          children: [
+                                            Text(
+                                              '$currencySymbol$amount',
+                                              style: const TextStyle(
+                                                fontSize: 16,
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.black87,
+                                              ),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
                                             ),
                                             const SizedBox(height: 4),
                                             Text(
@@ -1467,10 +2118,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                                 fontSize: 12,
                                                 color: Colors.grey.shade600,
                                               ),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
                                             ),
                                           ],
                                         ),
                                       ),
+
                                     ],
                                   ),
                                 ),
@@ -1489,4 +2143,37 @@ class _ReportsScreenState extends State<ReportsScreen> {
       ),
     );
   }
+}
+
+// Validates and formats date parameters for API calls
+Map<String, String> _buildDateFilters(Map<String, dynamic> filters) {
+  Map<String, String> dateParams = {};
+
+  // Prioritize dateFrom/dateTo format for API calls
+  String? fromDate = filters['dateFrom'] ?? filters['fromDate'];
+  if (fromDate != null && fromDate.isNotEmpty) {
+    try {
+      // Validate date format and ensure it's in YYYY-MM-DD format
+      final parsedDate = DateTime.parse(fromDate);
+      // Use dateFrom for API parameter name
+      dateParams['dateFrom'] = DateFormat('yyyy-MM-dd').format(parsedDate);
+    } catch (e) {
+      debugPrint('Invalid dateFrom format: $fromDate, error: $e');
+    }
+  }
+
+  // Prioritize dateTo format for API calls
+  String? toDate = filters['dateTo'] ?? filters['toDate'];
+  if (toDate != null && toDate.isNotEmpty) {
+    try {
+      // Validate date format and ensure it's in YYYY-MM-DD format
+      final parsedDate = DateTime.parse(toDate);
+      // Use dateTo for API parameter name
+      dateParams['dateTo'] = DateFormat('yyyy-MM-dd').format(parsedDate);
+    } catch (e) {
+      debugPrint('Invalid dateTo format: $toDate, error: $e');
+    }
+  }
+
+  return dateParams;
 }

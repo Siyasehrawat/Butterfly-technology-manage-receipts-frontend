@@ -18,21 +18,41 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="Manage Receipt App - AI Receipt Scanner & Expense Tracker">
+  <meta name="google-signin-client_id" content="YOUR_WEB_CLIENT_ID.apps.googleusercontent.com">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="expense_mangement">
+  <meta name="apple-mobile-web-app-title" content="Manage Receipt">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>expense_mangement</title>
+  <title>Manage Receipt</title>
   <link rel="manifest" href="manifest.json">
+
+  <!-- Google reCAPTCHA v3 (single include) -->
+  <script src="https://www.google.com/recaptcha/api.js?render=6Ldx1L0rAAAAAKUMppqNGZngH056KVZmoN0uI1zc"></script>
+
+  <script src="https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js"></script>
+
+  <!-- Facebook JS SDK -->
+  <script>
+    window.fbAsyncInit = function() {
+      FB.init({
+        appId: '1550254289295115',
+        cookie: true,
+        xfbml: false,
+        version: 'v19.0'
+      });
+    };
+  </script>
+  <script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
 </head>
 <body>
+<div id="fb-root"></div>
 <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

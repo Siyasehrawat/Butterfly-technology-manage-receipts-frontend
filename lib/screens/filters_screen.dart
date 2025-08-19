@@ -6,6 +6,7 @@ import 'edit_merchant_screen.dart';
 import 'edit_category_screen.dart';
 import 'edit_date_screen.dart';
 import 'edit_amount_screen.dart';
+import 'edit_tags_screen.dart'; // NEW: Import EditTagsScreen
 import 'reports_screen.dart';
 
 class FiltersScreen extends StatelessWidget {
@@ -102,7 +103,7 @@ class FiltersScreen extends StatelessWidget {
                           context,
                           MaterialPageRoute(
                             builder: (context) => EditCategoryScreen(
-                              initialValue: provider.filters['category'] ?? '',
+                              initialValue: provider.filters['category'] ?? '', userId: '',
                             ),
                           ),
                         );
@@ -129,6 +130,26 @@ class FiltersScreen extends StatelessWidget {
                               (result['names'] as List).isNotEmpty) {
                             provider.updateFilter(
                                 'category', (result['names'] as List).first);
+                          }
+                        }
+                      }),
+                  const Divider(),
+                  // NEW: Tags Filter Option
+                  _buildFilterOption(
+                      context, 'Tags', _getTagsDisplayText(provider),
+                          () async {
+                        final result = await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => EditTagsScreen(
+                              initialValues: provider.filters['tags'] ?? [],
+                              userId: provider.userId, // Pass userId to fetch tags
+                            ),
+                          ),
+                        );
+                        if (result != null && result is Map<String, dynamic>) {
+                          if (result['names'] != null && result['names'] is List) {
+                            provider.updateFilter('tags', result['names']);
                           }
                         }
                       }),
@@ -276,6 +297,21 @@ class FiltersScreen extends StatelessWidget {
 
     // Fallback to single category
     return provider.filters['category'] ?? '';
+  }
+
+  // NEW: Method to get display text for selected tags
+  String _getTagsDisplayText(ReceiptProvider provider) {
+    if (provider.filters['tags'] != null && provider.filters['tags'] is List) {
+      final tags = provider.filters['tags'] as List;
+      if (tags.isEmpty) {
+        return '';
+      } else if (tags.length == 1) {
+        return tags.first.toString();
+      } else {
+        return '${tags.length} tags selected';
+      }
+    }
+    return '';
   }
 
   String _getAmountDisplayText(ReceiptProvider provider) {

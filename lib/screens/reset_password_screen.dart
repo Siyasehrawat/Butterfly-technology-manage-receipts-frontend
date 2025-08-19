@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:logger/logger.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'sign_in_screen.dart';
 import '../widgets/curved_background.dart';
 
@@ -32,6 +33,35 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   bool _obscureConfirmPassword = true;
   bool _isLoading = false;
   String? _errorMessage;
+  
+  // Require: 8+ chars, at least one uppercase, one digit, and one special char
+  final RegExp _passwordStrengthRegex = RegExp(
+    r'^(?=.*[A-Z])(?=.*\d)(?=.*[!@#\$%\^&\*\(\)_\+\-=/\\\{\}\[\]\|:;"<>,\.\?/]).{8,}$',
+  );
+
+  String? _validatePassword(String? value) {
+    if (value == null || value.isEmpty) {
+      return 'Please enter a new password';
+    }
+    final List<String> missingCriteria = [];
+    if (value.length < 8) {
+      missingCriteria.add('at least 8 characters');
+    }
+    if (!RegExp(r'[A-Z]').hasMatch(value)) {
+      missingCriteria.add('one uppercase letter');
+    }
+    if (!RegExp(r'\d').hasMatch(value)) {
+      missingCriteria.add('one digit');
+    }
+    if (!RegExp(r'[!@#\$%\^&\*\(\)_\+\-=/\\\{\}\[\]\|:;"<>,\.\?/]')
+        .hasMatch(value)) {
+      missingCriteria.add('one special character');
+    }
+    if (missingCriteria.isNotEmpty) {
+      return 'Password needs ${missingCriteria.join(', ')}';
+    }
+    return null;
+  }
 
   @override
   void dispose() {
@@ -58,7 +88,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
 
         final response = await http.post(
           Uri.parse(
-              "https://manage-receipt-backend-bnl1.onrender.com/api/users/reset-password"),
+              "${dotenv.env['API_BASE_URL']}/api/users/reset-password"),
           headers: {"Content-Type": "application/json"},
           body: jsonEncode(payload),
         );
@@ -127,7 +157,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
                       ),
                       child: Center(
                         child: Image.asset(
-                          'assets/logo.png',
+                          '',
                           width: 30,
                           height: 30,
                           errorBuilder: (context, error, stackTrace) {
@@ -220,6 +250,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
                             TextFormField(
                               controller: _newPasswordController,
                               obscureText: _obscureNewPassword,
+                              autovalidateMode: AutovalidateMode.onUserInteraction,
                               decoration: InputDecoration(
                                 hintText: 'New Password',
                                 contentPadding: const EdgeInsets.symmetric(
@@ -240,15 +271,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
                                   },
                                 ),
                               ),
-                              validator: (value) {
-                                if (value == null || value.isEmpty) {
-                                  return 'Please enter a new password';
-                                }
-                                if (value.length < 6) {
-                                  return 'Password must be at least 6 characters';
-                                }
-                                return null;
-                              },
+                              validator: _validatePassword,
                             ),
                             const SizedBox(height: 16),
                             TextFormField(
@@ -284,6 +307,17 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
                                 }
                                 return null;
                               },
+                            ),
+                            const SizedBox(height: 8),
+                            const Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                'Password must be at least 8 characters with one\ncapital letter and one special character and one digit',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey,
+                                ),
+                              ),
                             ),
                             const SizedBox(height: 32),
                             SizedBox(

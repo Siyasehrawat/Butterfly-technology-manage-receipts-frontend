@@ -1,15 +1,9 @@
-// Add these import statements at the top
-import java.util.Properties
-import org.gradle.api.GradleException
-
 plugins {
     id "com.android.application"
     id "kotlin-android"
     id "dev.flutter.flutter-gradle-plugin"
+    id "com.google.gms.google-services" // Apply the Google Services plugin
 }
-
-// Define kotlin_version
-def kotlin_version = "1.8.22"
 
 def localProperties = new Properties()
 def localPropertiesFile = rootProject.file('local.properties')
@@ -17,11 +11,6 @@ if (localPropertiesFile.exists()) {
     localPropertiesFile.withReader('UTF-8') { reader ->
         localProperties.load(reader)
     }
-}
-
-def flutterRoot = localProperties.getProperty('flutter.sdk')
-if (flutterRoot == null) {
-    throw new GradleException("Flutter SDK not found. Define location with flutter.sdk in the local.properties file.")
 }
 
 def flutterVersionCode = localProperties.getProperty('flutter.versionCode')
@@ -34,7 +23,6 @@ if (flutterVersionName == null) {
     flutterVersionName = '1.0'
 }
 
-// Add keystore configuration
 def keystoreProperties = new Properties()
 def keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
@@ -43,19 +31,18 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace "com.ButterflyTchnology.managereceipt"
-    compileSdkVersion flutter.compileSdkVersion
-
-    // Update NDK version to match plugin requirements
-    ndkVersion "27.0.12077973"
+    compileSdk 36 // Keep at 35 or higher
+    ndkVersion "27.2.12479018"
 
     compileOptions {
-        // Update Java compatibility to newer versions
-        sourceCompatibility JavaVersion.VERSION_11
-        targetCompatibility JavaVersion.VERSION_11
+        sourceCompatibility JavaVersion.VERSION_1_8 // Set to Java 1.8
+        targetCompatibility JavaVersion.VERSION_1_8 // Set to Java 1.8
+        // Enable core library desugaring
+        coreLibraryDesugaringEnabled true
     }
 
     kotlinOptions {
-        jvmTarget = '11'
+        jvmTarget = '1.8' // Set to Java 1.8
     }
 
     sourceSets {
@@ -64,16 +51,13 @@ android {
 
     defaultConfig {
         applicationId "com.ButterflyTchnology.managereceipt"
-        minSdkVersion 21  // Updated for Facebook SDK
-        targetSdkVersion flutter.targetSdkVersion
+        minSdkVersion 24
+        targetSdkVersion 36 // Keep at 35 or higher
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
-
-        // Add multidex support
         multiDexEnabled true
     }
 
-    // Add signing configs
     signingConfigs {
         release {
             if (keystorePropertiesFile.exists()) {
@@ -81,12 +65,6 @@ android {
                 keyPassword keystoreProperties['keyPassword']
                 storeFile file(keystoreProperties['storeFile'])
                 storePassword keystoreProperties['storePassword']
-            } else {
-                // Use debug signing if no keystore file exists
-                keyAlias 'androiddebugkey'
-                keyPassword 'android'
-                storeFile file('debug.keystore')
-                storePassword 'android'
             }
         }
     }
@@ -96,16 +74,13 @@ android {
             signingConfig signingConfigs.release
             minifyEnabled false
             shrinkResources false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {
-            // Add this to ensure debug builds work properly
             signingConfig signingConfigs.debug
         }
     }
 
-    // Add this to fix lint issues
-    lintOptions {
+    lint {
         disable 'InvalidPackage'
         checkReleaseBuilds false
     }
@@ -116,10 +91,13 @@ flutter {
 }
 
 dependencies {
-    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
-    // Facebook SDK is now optional - comment out if not using
-    // implementation "com.facebook.android:facebook-login:18.0.2"
-
-    // Add multidex support
+    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.0"
     implementation 'androidx.multidex:multidex:2.0.1'
+    // Firebase dependencies
+    implementation platform('com.google.firebase:firebase-bom:32.7.0') // Use a compatible BOM version
+    implementation 'com.google.firebase:firebase-messaging'
+    implementation 'com.google.firebase:firebase-analytics'
+    implementation 'com.google.android.recaptcha:recaptcha:18.8.0-beta03'
+    // Add core library desugaring dependency
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'
 }

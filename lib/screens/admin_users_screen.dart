@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:intl/intl.dart';
 import '../widgets/curved_background.dart';
 import 'admin_user_details_screen.dart';
 
@@ -25,7 +27,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   final TextEditingController _searchController = TextEditingController();
   String _sortBy = 'name';
   bool _sortAscending = true;
-  String _filterStatus = 'All';
   String? _errorMessage;
 
   @override
@@ -50,7 +51,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
 
     try {
       final url = Uri.parse(
-          'https://manage-receipt-backend-bnl1.onrender.com/api/admin/users');
+          '${dotenv.env['API_BASE_URL']}/api/admin/users');
 
       final response = await http.get(
         url,
@@ -60,10 +61,13 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
         },
       );
 
+      debugPrint('Fetch Users - Response status: ${response.statusCode}');
+      debugPrint('Fetch Users - Response body: ${response.body}');
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         final List<dynamic> usersList =
-            data is List ? data : (data['users'] ?? []);
+        data is List ? data : (data['users'] ?? []);
         setState(() {
           _users = List<Map<String, dynamic>>.from(usersList);
           _applyFiltersAndSort();
@@ -84,20 +88,42 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     }
   }
 
-  Future<void> _deleteUser(String userId) async {
+  Future<void> _deleteUser(String userId, String userName) async {
     try {
-      final url = Uri.parse(
-          'https://manage-receipt-backend-bnl1.onrender.com/api/admin/users/$userId');
+      // Show loading indicator
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
 
-      final response = await http.delete(
+      final url = Uri.parse(
+          '${dotenv.env['API_BASE_URL']}/api/users/delete-account');
+
+      debugPrint('Deleting user with URL: $url');
+      debugPrint('User ID to delete: $userId');
+
+      // Changed from http.delete to http.post
+      final response = await http.post(
         url,
         headers: {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
         },
+        body: json.encode({
+          'userId': userId,
+        }),
       );
 
-      if (response.statusCode == 200) {
+      // Hide loading indicator
+      Navigator.of(context).pop();
+
+      debugPrint('Delete User - Response status: ${response.statusCode}');
+      debugPrint('Delete User - Response body: ${response.body}');
+
+      if (response.statusCode == 200 || response.statusCode == 204) {
         // Remove user from local list
         setState(() {
           _users.removeWhere((u) => u['id'] == userId);
@@ -105,20 +131,27 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
         });
 
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('User deleted successfully'),
-            backgroundColor: Color(0xFF7E5EFD),
+          SnackBar(
+            content: Text('User "$userName" deleted successfully'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 3),
           ),
         );
       } else {
         throw Exception('Failed to delete user: ${response.statusCode}');
       }
     } catch (e) {
+      // Hide loading indicator if still showing
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      }
+
       debugPrint('Error deleting user: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Failed to delete user'),
+        SnackBar(
+          content: Text('Failed to delete user "$userName": ${e.toString()}'),
           backgroundColor: Colors.red,
+          duration: const Duration(seconds: 4),
         ),
       );
     }
@@ -127,7 +160,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   Future<void> _updateUser(String userId, Map<String, dynamic> userData) async {
     try {
       final url = Uri.parse(
-          'https://manage-receipt-backend-bnl1.onrender.com/api/admin/users/$userId');
+          '${dotenv.env['API_BASE_URL']}/api/admin/users/$userId');
 
       final response = await http.put(
         url,
@@ -137,6 +170,9 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
         },
         body: json.encode(userData),
       );
+
+      debugPrint('Update User - Response status: ${response.statusCode}');
+      debugPrint('Update User - Response body: ${response.body}');
 
       if (response.statusCode == 200) {
         // Update user in local list
@@ -153,7 +189,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('User updated successfully'),
-            backgroundColor: Color(0xFF7E5EFD),
+            backgroundColor: Colors.green,
           ),
         );
       } else {
@@ -170,49 +206,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     }
   }
 
-  Future<void> _createUser(Map<String, dynamic> userData) async {
-    try {
-      final url = Uri.parse(
-          'https://manage-receipt-backend-bnl1.onrender.com/api/admin/users');
-
-      final response = await http.post(
-        url,
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Content-Type': 'application/json',
-        },
-        body: json.encode(userData),
-      );
-
-      if (response.statusCode == 201) {
-        final newUser = json.decode(response.body);
-
-        // Add user to local list
-        setState(() {
-          _users.add(newUser);
-          _applyFiltersAndSort();
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('User created successfully'),
-            backgroundColor: Color(0xFF7E5EFD),
-          ),
-        );
-      } else {
-        throw Exception('Failed to create user: ${response.statusCode}');
-      }
-    } catch (e) {
-      debugPrint('Error creating user: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Failed to create user'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
-
   void _filterUsers() {
     _applyFiltersAndSort();
   }
@@ -222,13 +215,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
 
     // Apply filters
     List<Map<String, dynamic>> filtered = _users.where((user) {
-      // Apply status filter (case-insensitive)
-      if (_filterStatus != 'All' &&
-          (user['status']?.toString().toLowerCase() !=
-              _filterStatus.toLowerCase())) {
-        return false;
-      }
-
       // Apply search filter
       if (query.isNotEmpty) {
         final name = user['name']?.toString().toLowerCase() ?? '';
@@ -286,6 +272,56 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     });
   }
 
+  String _formatDate(String? dateString) {
+    if (dateString == null || dateString.isEmpty) return 'Never';
+
+    try {
+      final date = DateTime.parse(dateString);
+      return DateFormat('MMM dd, yyyy').format(date);
+    } catch (e) {
+      return dateString; // Return original string if parsing fails
+    }
+  }
+
+  String _formatDateTime(String? dateString) {
+    if (dateString == null || dateString.isEmpty) return 'Never';
+
+    try {
+      final raw = dateString.trim();
+      // If backend sends only date (YYYY-MM-DD), show month, day and year
+      if (RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(raw)) {
+        final dateOnly = DateTime.parse(raw);
+        return DateFormat('MMM dd, yyyy').format(dateOnly);
+      }
+
+      // Otherwise include time as well
+      final dateTime = DateTime.parse(raw).toLocal();
+      return DateFormat('MMM dd, yyyy, HH:mm').format(dateTime);
+    } catch (e) {
+      return dateString; // Return original string if parsing fails
+    }
+  }
+
+  String _wrapNameAfterFirstName(String name) {
+    if (name.isEmpty) return name;
+    
+    final nameParts = name.trim().split(' ');
+    if (nameParts.length <= 1) return name;
+    
+    final firstName = nameParts[0];
+    final remainingName = nameParts.sublist(1).join(' ');
+    return '$firstName\n$remainingName';
+  }
+
+  String _wrapEmailAfterAt(String email) {
+    if (email.isEmpty || !email.contains('@')) return email;
+    
+    final atIndex = email.indexOf('@');
+    final beforeAt = email.substring(0, atIndex);
+    final afterAt = email.substring(atIndex);
+    return '$beforeAt\n$afterAt';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -340,7 +376,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
               // Search and Filter Bar
               Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: Column(
                   children: [
                     // Search Bar
@@ -361,24 +397,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                     ),
                     const SizedBox(height: 12),
 
-                    // Filter Options
-                    Row(
-                      children: [
-                        const Text(
-                          'Status:',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        _buildFilterChip('All'),
-                        const SizedBox(width: 8),
-                        _buildFilterChip('Active'),
-                        const SizedBox(width: 8),
-                        _buildFilterChip('Inactive'),
-                      ],
-                    ),
                   ],
                 ),
               ),
@@ -387,149 +405,121 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
               Expanded(
                 child: _isLoading
                     ? const Center(
-                        child: CircularProgressIndicator(
-                          color: Colors.white,
-                        ),
-                      )
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                  ),
+                )
                     : _errorMessage != null
-                        ? Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(
-                                  Icons.error_outline,
-                                  size: 64,
-                                  color: Colors.white.withOpacity(0.7),
-                                ),
-                                const SizedBox(height: 16),
-                                Text(
-                                  _errorMessage!,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 16,
-                                  ),
-                                  textAlign: TextAlign.center,
-                                ),
-                                const SizedBox(height: 16),
-                                ElevatedButton(
-                                  onPressed: _fetchUsers,
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.white,
-                                    foregroundColor: const Color(0xFF7E5EFD),
-                                  ),
-                                  child: const Text('Retry'),
-                                ),
-                              ],
-                            ),
-                          )
-                        : Container(
-                            decoration: const BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.only(
-                                topLeft: Radius.circular(20),
-                                topRight: Radius.circular(20),
-                              ),
-                            ),
-                            child: _filteredUsers.isEmpty
-                                ? const Center(
-                                    child: Text(
-                                      'No users found',
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        color: Colors.grey,
-                                      ),
-                                    ),
-                                  )
-                                : Column(
-                                    children: [
-                                      // Table Header
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 16, vertical: 12),
-                                        decoration: BoxDecoration(
-                                          color: Colors.grey.shade100,
-                                          borderRadius: const BorderRadius.only(
-                                            topLeft: Radius.circular(20),
-                                            topRight: Radius.circular(20),
-                                          ),
-                                        ),
-                                        child: Row(
-                                          children: [
-                                            Expanded(
-                                              flex: 3,
-                                              child: _buildSortableHeader(
-                                                  'Name', 'name'),
-                                            ),
-                                            Expanded(
-                                              flex: 3,
-                                              child: _buildSortableHeader(
-                                                  'Email', 'email'),
-                                            ),
-                                            Expanded(
-                                              flex: 2,
-                                              child: _buildSortableHeader(
-                                                  'Status', 'status'),
-                                            ),
-                                            const SizedBox(
-                                                width: 40), // Action column
-                                          ],
-                                        ),
-                                      ),
-
-                                      // Table Body
-                                      Expanded(
-                                        child: ListView.builder(
-                                          itemCount: _filteredUsers.length,
-                                          itemBuilder: (context, index) {
-                                            final user = _filteredUsers[index];
-                                            return _buildUserRow(user);
-                                          },
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                    ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.error_outline,
+                        size: 64,
+                        color: Colors.white.withOpacity(0.7),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        _errorMessage!,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 16),
+                      ElevatedButton(
+                        onPressed: _fetchUsers,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: const Color(0xFF7E5EFD),
+                        ),
+                        child: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+                )
+                    : Container(
+                  decoration: const BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.only(
+                      topLeft: Radius.circular(20),
+                      topRight: Radius.circular(20),
+                    ),
+                  ),
+                  child: _filteredUsers.isEmpty
+                      ? const Center(
+                    child: Text(
+                      'No users found',
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Colors.grey,
+                      ),
+                    ),
+                  )
+                      : Column(
+                    children: [
+                      // Table Header
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade100,
+                          borderRadius: const BorderRadius.only(
+                            topLeft: Radius.circular(20),
+                            topRight: Radius.circular(20),
                           ),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              flex: 3,
+                              child: _buildSortableHeader(
+                                  'Name', 'name'),
+                            ),
+                            Expanded(
+                              flex: 3,
+                              child: _buildSortableHeader(
+                                  'Email', 'email'),
+                            ),
+                            Expanded(
+                              flex: 3,
+                              child: _buildSortableHeader(
+                                  'Last Login', 'lastActive'),
+                            ),
+                            Expanded(
+                              flex: 2,
+                              child: _buildSortableHeader(
+                                  'Receipts', 'receiptCount'),
+                            ),
+                            const SizedBox(
+                                width: 40), // Action column
+                          ],
+                        ),
+                      ),
+
+                      // Table Body
+                      Expanded(
+                        child: ListView.builder(
+                          itemCount: _filteredUsers.length,
+                          itemBuilder: (context, index) {
+                            final user = _filteredUsers[index];
+                            return _buildUserRow(user);
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
           ),
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        backgroundColor: const Color(0xFF7E5EFD),
-        onPressed: () {
-          _showAddUserDialog();
-        },
-        child: const Icon(Icons.add),
-      ),
     );
   }
 
-  Widget _buildFilterChip(String status) {
-    final isSelected = _filterStatus == status;
-
-    return GestureDetector(
-      onTap: () {
-        setState(() {
-          _filterStatus = status;
-          _applyFiltersAndSort();
-        });
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: isSelected ? Colors.white : Colors.white.withOpacity(0.3),
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Text(
-          status,
-          style: TextStyle(
-            color: isSelected ? const Color(0xFF7E5EFD) : Colors.white,
-            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-          ),
-        ),
-      ),
-    );
-  }
 
   Widget _buildSortableHeader(String title, String field) {
     final isCurrentSortField = _sortBy == field;
@@ -538,13 +528,17 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
       onTap: () => _changeSortOrder(field),
       child: Row(
         children: [
-          Text(
-            title,
-            style: TextStyle(
-              fontWeight:
-                  isCurrentSortField ? FontWeight.bold : FontWeight.normal,
-              color:
-                  isCurrentSortField ? const Color(0xFF7E5EFD) : Colors.black,
+          Flexible(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontWeight:
+                isCurrentSortField ? FontWeight.bold : FontWeight.normal,
+                color:
+                isCurrentSortField ? const Color(0xFF7E5EFD) : Colors.black,
+              ),
             ),
           ),
           if (isCurrentSortField)
@@ -583,38 +577,39 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
             Expanded(
               flex: 3,
               child: Text(
-                user['name'] ?? 'Unknown',
+                _wrapNameAfterFirstName(user['name'] ?? 'Unknown'),
                 style: const TextStyle(fontWeight: FontWeight.w500),
               ),
             ),
             Expanded(
               flex: 3,
               child: Text(
-                user['email'] ?? 'No email',
+                _wrapEmailAfterAt(user['email'] ?? 'No email'),
                 style: TextStyle(color: Colors.grey.shade700),
               ),
             ),
             Expanded(
               flex: 2,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: user['status'] == 'Active'
-                      ? Colors.green.shade100
-                      : Colors.red.shade100,
-                  borderRadius: BorderRadius.circular(12),
+              child: Text(
+                _formatDateTime(user['lastActive']?.toString() ?? 
+                    user['lastActiveAt']?.toString() ??
+                    user['lastActivity']?.toString()),
+                style: TextStyle(
+                  color: Colors.grey.shade600,
+                  fontSize: 12,
                 ),
-                child: Text(
-                  user['status'] ?? 'Unknown',
-                  style: TextStyle(
-                    color: user['status'] == 'Active'
-                        ? Colors.green.shade800
-                        : Colors.red.shade800,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                  ),
-                  textAlign: TextAlign.center,
+                textAlign: TextAlign.center,
+              ),
+            ),
+            Expanded(
+              flex: 2,
+              child: Text(
+                '${user['receiptCount']?.toString() ?? user['totalReceipts']?.toString() ?? '0'}',
+                style: const TextStyle(
+                  fontWeight: FontWeight.w500,
+                  fontSize: 12,
                 ),
+                textAlign: TextAlign.center,
               ),
             ),
             IconButton(
@@ -675,7 +670,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                       : 'Activate User',
                   style: TextStyle(
                     color:
-                        user['status'] == 'Active' ? Colors.red : Colors.green,
+                    user['status'] == 'Active' ? Colors.red : Colors.green,
                   ),
                 ),
                 onTap: () {
@@ -694,85 +689,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
               ),
             ],
           ),
-        );
-      },
-    );
-  }
-
-  void _showAddUserDialog() {
-    final nameController = TextEditingController();
-    final emailController = TextEditingController();
-    final passwordController = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Add New User'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: nameController,
-                  decoration: const InputDecoration(
-                    labelText: 'Name',
-                    hintText: 'Enter user name',
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: emailController,
-                  decoration: const InputDecoration(
-                    labelText: 'Email',
-                    hintText: 'Enter user email',
-                  ),
-                  keyboardType: TextInputType.emailAddress,
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: passwordController,
-                  decoration: const InputDecoration(
-                    labelText: 'Password',
-                    hintText: 'Enter temporary password',
-                  ),
-                  obscureText: true,
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                if (nameController.text.isEmpty ||
-                    emailController.text.isEmpty ||
-                    passwordController.text.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Please fill all fields'),
-                      backgroundColor: Colors.red,
-                    ),
-                  );
-                  return;
-                }
-
-                Navigator.pop(context);
-                _createUser({
-                  'name': nameController.text,
-                  'email': emailController.text,
-                  'password': passwordController.text,
-                });
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF7E5EFD),
-              ),
-              child: const Text('Add User'),
-            ),
-          ],
         );
       },
     );
@@ -866,10 +782,10 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor:
-                    user['status'] == 'Active' ? Colors.red : Colors.green,
+                user['status'] == 'Active' ? Colors.red : Colors.green,
               ),
               child:
-                  Text(user['status'] == 'Active' ? 'Deactivate' : 'Activate'),
+              Text(user['status'] == 'Active' ? 'Deactivate' : 'Activate'),
             ),
           ],
         );
@@ -883,8 +799,22 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
       builder: (context) {
         return AlertDialog(
           title: const Text('Delete User'),
-          content: Text(
-              'Are you sure you want to delete ${user['name']}? This action cannot be undone.'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Are you sure you want to delete "${user['name']}"?'),
+              const SizedBox(height: 8),
+              const Text(
+                'This action cannot be undone and will permanently remove:',
+                style: TextStyle(fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 4),
+              const Text('• User account and profile'),
+              const Text('• All user receipts and data'),
+              const Text('• User activity history'),
+            ],
+          ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
@@ -893,12 +823,12 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
             ElevatedButton(
               onPressed: () {
                 Navigator.pop(context);
-                _deleteUser(user['id']);
+                _deleteUser(user['id'], user['name'] ?? 'Unknown User');
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.red,
               ),
-              child: const Text('Delete'),
+              child: const Text('Delete User'),
             ),
           ],
         );

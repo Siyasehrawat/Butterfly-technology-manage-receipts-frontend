@@ -1,13 +1,13 @@
 buildscript {
-    ext.kotlin_version = '1.8.22'
+    ext.kotlin_version = '2.1.0'
     repositories {
         google()
         mavenCentral()
     }
-
     dependencies {
-        classpath 'com.android.tools.build:gradle:7.3.0'
+        classpath 'com.android.tools.build:gradle:8.6.0' // Ensure this is compatible with your Flutter version
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+        classpath 'com.google.gms:google-services:4.4.1' // Firebase Google Services plugin
     }
 }
 
@@ -24,12 +24,6 @@ subprojects {
 }
 subprojects {
     project.evaluationDependsOn(':app')
-
-    // Add this to fix Java version warnings
-    project.configurations.all {
-        resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22'
-        resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22'
-    }
 }
 
 tasks.register("clean", Delete) {
