@@ -7,6 +7,9 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'full_image_view_screen.dart';
 import 'pdf_viewer_screen.dart'; // Import the PDF viewer screen
+import 'package:flutter/cupertino.dart';
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart';
 
 class ReceiptDetailsScreen extends StatefulWidget {
   final Map<String, dynamic> receipt;
@@ -323,6 +326,61 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
     }
   }
 
+  // Add this method to show platform-specific date picker
+  Future<void> _showDatePicker() async {
+    final DateTime now = DateTime.now();
+    if (Platform.isIOS) {
+      // iOS-style date picker
+      showCupertinoModalPopup(
+        context: context,
+        builder: (BuildContext context) {
+          return Container(
+            height: 216,
+            padding: const EdgeInsets.only(top: 6.0),
+            margin: EdgeInsets.only(
+              bottom: MediaQuery.of(context).viewInsets.bottom,
+            ),
+            color: CupertinoColors.systemBackground.resolveFrom(context),
+            child: SafeArea(
+              top: false,
+              child: CupertinoDatePicker(
+                initialDateTime: _parseDate(_dateController.text) ?? now,
+                mode: CupertinoDatePickerMode.date,
+                onDateTimeChanged: (DateTime newDate) {
+                  setState(() {
+                    _dateController.text = DateFormat('MM-dd-yyyy').format(newDate);
+                  });
+                },
+              ),
+            ),
+          );
+        },
+      );
+    } else {
+      // Android-style date picker
+      final DateTime? picked = await showDatePicker(
+        context: context,
+        initialDate: _parseDate(_dateController.text) ?? now,
+        firstDate: DateTime(2000),
+        lastDate: DateTime(2101),
+      );
+      if (picked != null) {
+        setState(() {
+          _dateController.text = DateFormat('MM-dd-yyyy').format(picked);
+        });
+      }
+    }
+  }
+
+  // Helper method to parse date string
+  DateTime? _parseDate(String date) {
+    try {
+      return DateFormat('MM-dd-yyyy').parse(date);
+    } catch (e) {
+      return null;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return WillPopScope(
@@ -553,92 +611,168 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
 
                   // Receipt details section
                   Padding(
-                    padding: const EdgeInsets.all(20.0),
+                    padding: const EdgeInsets.only(
+                      left: 20,
+                      right: 20,
+                      top: 24,  // Added top padding
+                    ),
                     child: Column(
                       children: [
-                        const Text(
-                          'Receipt Details',
-                          style: TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        const Text(
-                          'All receipt information in one organized view.',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.grey,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 20),
-
-                        // Editable fields container
+                        // Fields container
                         Container(
                           decoration: BoxDecoration(
-                            color: const Color(0xFFE8E6FF),
+                            color: Colors.white,
                             borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: const Color(0xFFE0E0E0)),
                             boxShadow: [
                               BoxShadow(
                                 color: Colors.black.withOpacity(0.05),
                                 blurRadius: 10,
-                                offset: const Offset(0, 5),
+                                offset: const Offset(0, 2),
                               ),
                             ],
                           ),
-                          padding: const EdgeInsets.all(20),
+                          padding: const EdgeInsets.all(24),
                           child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               // Merchant field
-                              _buildEditableField(
+                              const Text(
                                 'Merchant',
-                                _merchantController,
-                                _editingMerchant,
-                                    () => setState(
-                                        () => _editingMerchant = !_editingMerchant),
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black54,
+                                ),
                               ),
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _merchantController,
+                                decoration: const InputDecoration(
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                  border: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFFE0E0E0)),
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFFE0E0E0)),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFF7E5EFD), width: 2),
+                                  ),
+                                  filled: false,
+                                ),
+                              ),
+                              const SizedBox(height: 24),
 
                               // Date field
-                              _buildEditableField(
+                              const Text(
                                 'Date',
-                                _dateController,
-                                _editingDate,
-                                    () => setState(
-                                        () => _editingDate = !_editingDate),
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black54,
+                                ),
                               ),
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _dateController,
+                                readOnly: true,
+                                onTap: () async {
+                                  final DateTime? picked = await showDatePicker(
+                                    context: context,
+                                    initialDate: _parseDate(_dateController.text) ?? DateTime.now(),
+                                    firstDate: DateTime(2000),
+                                    lastDate: DateTime(2101),
+                                  );
+                                  if (picked != null) {
+                                    setState(() {
+                                      _dateController.text = DateFormat('MM-dd-yyyy').format(picked);
+                                    });
+                                  }
+                                },
+                                decoration: const InputDecoration(
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                  border: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFFE0E0E0)),
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFFE0E0E0)),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFF7E5EFD), width: 2),
+                                  ),
+                                  suffixIcon: Icon(Icons.calendar_today, color: Color(0xFF7E5EFD)),
+                                  filled: false,
+                                ),
+                              ),
+                              const SizedBox(height: 24),
 
-                              // Amount field with decimal support
-                              _buildEditableField(
+                              // Amount field
+                              const Text(
                                 'Amount',
-                                _amountController,
-                                _editingAmount,
-                                    () => setState(
-                                        () => _editingAmount = !_editingAmount),
-                                prefix: _editingAmount ? currencySymbol : null,
-                                keyboardType:
-                                const TextInputType.numberWithOptions(
-                                    decimal: true),
-                                formatText: (text) => '$currencySymbol$text',
-                                inputFormatters: [
-                                  FilteringTextInputFormatter.allow(
-                                      RegExp(r'[0-9.]')),
-                                ],
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black54,
+                                ),
                               ),
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _amountController,
+                                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                textInputAction: TextInputAction.done,
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}')),
+                                ],
+                                decoration: const InputDecoration(
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                  border: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFFE0E0E0)),
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFFE0E0E0)),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFF7E5EFD), width: 2),
+                                  ),
+                                  prefixText: '\$',
+                                  filled: false,
+                                ),
+                              ),
+                              const SizedBox(height: 24),
 
-                              // Category field - now editable just like merchant and amount
-                              _buildEditableField(
+                              // Category field
+                              const Text(
                                 'Category',
-                                _categoryController,
-                                _editingCategory,
-                                    () => setState(
-                                        () => _editingCategory = !_editingCategory),
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black54,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _categoryController,
+                                decoration: const InputDecoration(
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                  border: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFFE0E0E0)),
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFFE0E0E0)),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFF7E5EFD), width: 2),
+                                  ),
+                                  filled: false,
+                                ),
                               ),
                             ],
                           ),
                         ),
 
-                        const SizedBox(height: 24),
+                        // Add spacing before buttons
+                        const SizedBox(height: 32),
 
                         // Save button
                         SizedBox(
@@ -648,39 +782,41 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                             onPressed: _isSaving ? null : _saveReceiptToBackend,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFF7E5EFD),
+                              foregroundColor: Colors.white,
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(8),
                               ),
+                              elevation: 0,
                             ),
                             child: _isSaving
                                 ? const Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2,
-                                  ),
-                                ),
-                                SizedBox(width: 12),
-                                Text(
-                                  'Saving...',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            )
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          color: Colors.white,
+                                          strokeWidth: 2,
+                                        ),
+                                      ),
+                                      SizedBox(width: 12),
+                                      Text(
+                                        'Saving...',
+                                        style: TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  )
                                 : const Text(
-                              'Save',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
+                                    'Save',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
                           ),
                         ),
 
@@ -691,9 +827,7 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                             width: double.infinity,
                             height: 50,
                             child: OutlinedButton(
-                              onPressed: _isDeleting
-                                  ? null
-                                  : () => _deleteReceipt(context),
+                              onPressed: _isDeleting ? null : () => _deleteReceipt(context),
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: Colors.red,
                                 side: const BorderSide(color: Colors.red),
@@ -701,18 +835,40 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                                   borderRadius: BorderRadius.circular(8),
                                 ),
                               ),
-                              child: const Text(
-                                'Delete Receipt',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
+                              child: _isDeleting
+                                  ? const Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(
+                                            color: Colors.red,
+                                            strokeWidth: 2,
+                                          ),
+                                        ),
+                                        SizedBox(width: 12),
+                                        Text(
+                                          'Deleting...',
+                                          style: TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  : const Text(
+                                      'Delete Receipt',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
                             ),
                           ),
                         ],
 
-                        // Add bottom padding to ensure content isn't covered by system navigation
+                        // Bottom padding
                         const SizedBox(height: 16),
                       ],
                     ),
@@ -726,69 +882,40 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
     );
   }
 
-  Widget _buildEditableField(
-      String label,
-      TextEditingController controller,
-      bool isEditing,
-      VoidCallback onEditToggle, {
-        String? prefix,
-        TextInputType? keyboardType,
-        String Function(String)? formatText,
-        VoidCallback? onTap,
-        List<TextInputFormatter>? inputFormatters,
-      }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.bold,
-            color: Colors.black54,
+  Widget _buildAmountField() {
+    return TextField(
+      controller: _amountController,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      textInputAction: TextInputAction.done,
+      inputFormatters: [
+        FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}')),
+      ],
+      decoration: const InputDecoration(
+        contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        border: OutlineInputBorder(),
+        prefixText: '\$',
+      ),
+    );
+  }
+
+  Widget _buildDateField() {
+    return GestureDetector(
+      onTap: _showDatePicker,
+      child: AbsorbPointer(
+        child: TextField(
+          controller: _dateController,
+          decoration: const InputDecoration(
+            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            border: OutlineInputBorder(),
+            suffixIcon: Icon(Icons.calendar_today),
           ),
         ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: isEditing
-                  ? TextField(
-                controller: controller,
-                decoration: InputDecoration(
-                  contentPadding: const EdgeInsets.symmetric(
-                      vertical: 8, horizontal: 0),
-                  isDense: true,
-                  border: InputBorder.none,
-                  prefixText: prefix,
-                ),
-                keyboardType: keyboardType,
-                inputFormatters: inputFormatters,
-                onTap: onTap,
-                readOnly: onTap != null,
-              )
-                  : Text(
-                formatText != null
-                    ? formatText(controller.text)
-                    : controller.text,
-                style: const TextStyle(
-                  fontSize: 16,
-                ),
-              ),
-            ),
-            IconButton(
-              icon: Icon(
-                isEditing ? Icons.check : Icons.edit,
-                size: 20,
-                color: const Color(0xFF7E5EFD),
-              ),
-              onPressed: onEditToggle,
-            ),
-          ],
-        ),
-        const Divider(),
-        const SizedBox(height: 8),
-      ],
+      ),
     );
+  }
+
+  bool get _isIOS {
+    if (kIsWeb) return false;
+    return Platform.isIOS;
   }
 }
