@@ -13,6 +13,7 @@ import '../widgets/curved_background.dart';
 import '../providers/user_provider.dart';
 import '../services/api_service_bypass.dart';
 import '../services/subscription_service_bypass.dart';
+import '../services/document_scan_service.dart';
 
 class ProfileScreen extends StatefulWidget {
   final String userId;
@@ -247,13 +248,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _pickImage(ImageSource source) async {
     try {
-      final picker = ImagePicker();
-      final pickedFile = await picker.pickImage(
-        source: source,
-        maxWidth: 800,
-        maxHeight: 800,
-        imageQuality: 85,
-      );
+      XFile? pickedFile;
+      if (source == ImageSource.camera) {
+        pickedFile = await DocumentScanService.captureCroppedDocumentImage();
+      } else {
+        final picker = ImagePicker();
+        pickedFile = await picker.pickImage(
+          source: source,
+          maxWidth: 800,
+          maxHeight: 800,
+          imageQuality: 85,
+        );
+      }
 
       if (pickedFile != null) {
         String? uploadedImageUrl =
@@ -690,20 +696,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      child: Center(
-                        child: Image.asset(
-                          'assets/logo.png',
-                          width: 30,
-                          height: 30,
-                          errorBuilder: (context, error, stackTrace) {
-                            return const Text(
-                              'MR',
-                              style: TextStyle(
-                                color: Color(0xFF7E5EFD),
-                                fontWeight: FontWeight.bold,
-                              ),
-                            );
-                          },
+                      child: const Center(
+                        child: Text(
+                          'MR',
+                          style: TextStyle(
+                            color: Color(0xFF7E5EFD),
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                     ),

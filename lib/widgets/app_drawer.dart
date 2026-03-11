@@ -572,11 +572,11 @@ class _AppDrawerState extends State<AppDrawer> {
           child: _isReportsExpanded
               ? Column(
                   children: [
-                    // Custom Reports sub-item
+                    // Search Reports sub-item
                     _buildSubDrawerItem(
                       context,
                       icon: Icons.description,
-                      title: 'Custom Reports',
+                      title: 'Search Receipts',
                       onTap: () {
                         Navigator.pop(context);
                         Navigator.push(

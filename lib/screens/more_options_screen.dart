@@ -18,13 +18,20 @@ import 'package:Manage_Receipt/screens/sign_in_screen.dart';
 import 'package:Manage_Receipt/screens/analytics_screen.dart';
 import 'package:Manage_Receipt/screens/category_wise_spend_screen.dart';
 import 'package:Manage_Receipt/screens/tax_reports_screen.dart';
+import 'package:Manage_Receipt/screens/tax_calculator_screen.dart';
 import 'package:Manage_Receipt/screens/admin_users_screen.dart';
 import 'package:Manage_Receipt/screens/admin_analytics_screen.dart';
 import 'package:Manage_Receipt/screens/admin_dashboard_screen.dart';
 import 'package:Manage_Receipt/screens/mr_bucks_screen.dart';
 import 'package:Manage_Receipt/screens/refer_earn_screen.dart';
+import 'package:Manage_Receipt/screens/receipt_details_screen.dart';
+import 'package:Manage_Receipt/screens/track_distance_screen.dart';
 import 'package:Manage_Receipt/widgets/upload_bottom_sheet.dart';
+import 'package:Manage_Receipt/widgets/app_bottom_nav_bar.dart';
 import 'package:Manage_Receipt/services/api_service_bypass.dart';
+import 'package:Manage_Receipt/services/document_scan_service.dart';
+import 'package:Manage_Receipt/utils/country_utils.dart';
+import 'package:Manage_Receipt/providers/receipt_provider.dart';
 
 class MoreOptionsScreen extends StatefulWidget {
   final String userId;
@@ -41,9 +48,11 @@ class MoreOptionsScreen extends StatefulWidget {
 }
 
 class _MoreOptionsScreenState extends State<MoreOptionsScreen> {
+  BuildContext? _outerContext;
 
   @override
   Widget build(BuildContext context) {
+    _outerContext = context;
     return Consumer<UserProvider>(
       builder: (context, userProvider, child) {
         final bool hasAdminAccess = userProvider.hasAdminAccess;
@@ -149,13 +158,44 @@ class _MoreOptionsScreenState extends State<MoreOptionsScreen> {
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: ListTile(
-                  leading: const Icon(Icons.card_giftcard, color: Colors.purple),
+                  leading: const Icon(Icons.people, color: Colors.purple),
                   title: const Text('Refer & Earn'),
                   subtitle: const Text('Invite friends and earn rewards'),
                   trailing: const Icon(Icons.arrow_forward_ios, size: 16),
                   onTap: () => _navigateToReferEarn(context),
                 ),
               ),
+
+              // Tax Calculator - Hidden for Indian users
+              if (!CountryUtils.isIndia(userProvider.country))
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF3F0FF),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: ListTile(
+                    leading: const Icon(Icons.calculate_outlined, color: Color(0xFF7E5EFD)),
+                    title: const Text('Estimated Tax Calculator'),
+                    subtitle: const Text('Estimate business and personal taxes'),
+                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                    onTap: () {
+                      final navContext = _outerContext ?? context;
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        try {
+                          _navigateToTaxCalculator(navContext);
+                        } catch (e) {
+                          debugPrint('Error navigating to Tax Calculator: $e');
+                          if (mounted) {
+                            ScaffoldMessenger.of(navContext).showSnackBar(
+                              SnackBar(content: Text('Error opening Tax Calculator: $e')),
+                            );
+                          }
+                        }
+                      });
+                    },
+                  ),
+                ),
 
               // Bill Reminders
               Container(
@@ -254,46 +294,33 @@ class _MoreOptionsScreenState extends State<MoreOptionsScreen> {
               ),
             ],
           ),
-          bottomNavigationBar: Consumer<FeatureFlagsProvider>(
-            builder: (context, featureFlagsProvider, child) {
-              return BottomNavigationBar(
-                type: BottomNavigationBarType.fixed,
-                backgroundColor: Colors.white,
-                selectedItemColor: const Color(0xFF7E5EFD),
-                unselectedItemColor: Colors.grey.shade600,
-                selectedFontSize: 12,
-                unselectedFontSize: 12,
-                currentIndex: 4, // More is selected
-                onTap: (index) {
-                  _onBottomNavTap(context, index);
+          bottomNavigationBar: AppBottomNavBar(
+            currentRoute: 'more',
+            userId: widget.userId,
+            token: widget.token,
+            onUploadTap: () {
+              final userProvider = Provider.of<UserProvider>(context, listen: false);
+              final country = userProvider.country;
+              UploadSheet.show(
+                context,
+                country: country,
+                onAction: (action) async {
+                  final userId = widget.userId;
+                  switch (action) {
+                    case UploadAction.camera:
+                      await _handleUploadFromHere(context, userId, source: ImageSource.camera);
+                      break;
+                    case UploadAction.gallery:
+                      await _handleUploadFromHere(context, userId, source: ImageSource.gallery);
+                      break;
+                    case UploadAction.manual:
+                      await _openManualReceipt(context, userId);
+                      break;
+                    case UploadAction.trackDistance:
+                      await _openTrackDistance(context, userId);
+                      break;
+                  }
                 },
-                items: [
-                  const BottomNavigationBarItem(
-                    icon: Icon(Icons.home_outlined, size: 26),
-                    activeIcon: Icon(Icons.home, size: 28),
-                    label: 'Home',
-                  ),
-                  const BottomNavigationBarItem(
-                    icon: Icon(Icons.analytics_outlined, size: 26),
-                    activeIcon: Icon(Icons.analytics, size: 28),
-                    label: 'Reports',
-                  ),
-                  const BottomNavigationBarItem(
-                    icon: Icon(Icons.add_circle_outline, size: 26),
-                    activeIcon: Icon(Icons.add_circle, size: 28),
-                    label: 'Upload',
-                  ),
-                  const BottomNavigationBarItem(
-                    icon: Icon(Icons.savings_outlined, size: 26),
-                    activeIcon: Icon(Icons.savings, size: 28),
-                    label: 'MR Bucks',
-                  ),
-                  const BottomNavigationBarItem(
-                    icon: Icon(Icons.more_horiz, size: 26),
-                    activeIcon: Icon(Icons.more_horiz, size: 28),
-                    label: 'More',
-                  ),
-                ],
               );
             },
           ),
@@ -310,11 +337,13 @@ class _MoreOptionsScreenState extends State<MoreOptionsScreen> {
   void _navigateToSplitReceipts(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => SplitReceiptsScreen(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => SplitReceiptsScreen(
           userId: widget.userId,
           token: widget.token,
         ),
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
       ),
     );
   }
@@ -322,11 +351,13 @@ class _MoreOptionsScreenState extends State<MoreOptionsScreen> {
   void _navigateToReferEarn(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => ReferEarnScreen(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => ReferEarnScreen(
           userId: widget.userId,
           token: widget.token,
         ),
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
       ),
     );
   }
@@ -334,10 +365,29 @@ class _MoreOptionsScreenState extends State<MoreOptionsScreen> {
   void _navigateToBillReminders(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => BillRemindersScreen(),
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => BillRemindersScreen(),
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
       ),
     );
+  }
+
+  void _navigateToTaxCalculator(BuildContext context) {
+    debugPrint('Navigating to Tax Calculator screen...');
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (BuildContext context) {
+          debugPrint('Building Tax Calculator screen...');
+          return const TaxCalculatorScreen();
+        },
+      ),
+    ).then((_) {
+      debugPrint('Tax Calculator screen closed');
+    }).catchError((error) {
+      debugPrint('Error in Tax Calculator navigation: $error');
+    });
   }
 
   void _showEmailReceiptsDialog(BuildContext context) {
@@ -842,6 +892,18 @@ class _MoreOptionsScreenState extends State<MoreOptionsScreen> {
   }
 
   void _onBottomNavTap(BuildContext context, int index) {
+    final featureFlagsProvider = Provider.of<FeatureFlagsProvider>(context, listen: false);
+    final isMrBucksEnabled = featureFlagsProvider.isMrBucksEnabled;
+    
+    // If mr bucks is disabled, adjust index mapping
+    // When disabled: Home(0), Reports(1), Upload(2), More(3)
+    // When enabled: Home(0), Reports(1), Upload(2), MR Bucks(3), More(4)
+    if (!isMrBucksEnabled && index == 3) {
+      // This is the "More" tab when mr bucks is disabled
+      // Already on more screen, do nothing
+      return;
+    }
+    
     switch (index) {
       case 0: // Home
         Navigator.pushNamedAndRemoveUntil(
@@ -854,57 +916,109 @@ class _MoreOptionsScreenState extends State<MoreOptionsScreen> {
         Navigator.pushNamed(context, '/reports');
         break;
       case 2: // Upload
-        UploadSheet.show(context, onAction: (action) async {
-          final userId = widget.userId;
-          switch (action) {
-            case UploadAction.camera:
-              await _handleUploadFromHere(context, userId, source: ImageSource.camera);
-              break;
-            case UploadAction.gallery:
-              await _handleUploadFromHere(context, userId, source: ImageSource.gallery);
-              break;
-            case UploadAction.manual:
-              await _openManualReceipt(context, userId);
-              break;
-          }
-        });
+        final userProvider = Provider.of<UserProvider>(context, listen: false);
+        final country = userProvider.country;
+        UploadSheet.show(
+          context,
+          country: country,
+          onAction: (action) async {
+            final userId = widget.userId;
+            switch (action) {
+              case UploadAction.camera:
+                await _handleUploadFromHere(context, userId, source: ImageSource.camera);
+                break;
+              case UploadAction.gallery:
+                await _handleUploadFromHere(context, userId, source: ImageSource.gallery);
+                break;
+              case UploadAction.manual:
+                await _openManualReceipt(context, userId);
+                break;
+              case UploadAction.trackDistance:
+                await _openTrackDistance(context, userId);
+                break;
+            }
+          },
+        );
         break;
-            case 3: // MR Bucks
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => const MrBucksScreen(),
-                ),
-              );
-              break;
-      case 4: // More
-        // Already on more screen, do nothing
+      case 3: // MR Bucks (only if enabled)
+        if (isMrBucksEnabled) {
+          Navigator.push(
+            context,
+            PageRouteBuilder(
+              pageBuilder: (context, animation, secondaryAnimation) => const MrBucksScreen(),
+              transitionDuration: Duration.zero,
+              reverseTransitionDuration: Duration.zero,
+            ),
+          );
+        }
+        break;
+      case 4: // More (only if mr bucks is enabled)
+        if (isMrBucksEnabled) {
+          // Already on more screen, do nothing
+        }
         break;
     }
   }
 
-  Future<void> _handleUploadFromHere(BuildContext context, String userId, {required ImageSource source}) async {
-    try {
-      final picker = ImagePicker();
-      final XFile? image = await picker.pickImage(source: source);
 
-      if (image != null) {
-        // Handle the upload logic here
-        // This would typically involve calling your upload service
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Upload functionality would be implemented here')),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e')),
-      );
+  Future<void> _handleUploadFromHere(BuildContext context, String userId, {required ImageSource source}) async {
+    final receiptProvider = Provider.of<ReceiptProvider>(context, listen: false);
+    receiptProvider.setUserId(userId);
+
+    final receiptData = await receiptProvider.uploadAndProcessReceipt(source);
+    if (receiptData == null) {
+      return;
     }
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ReceiptDetailsScreen(
+          receipt: receiptData,
+          imageUrl: receiptData['decryptedImageUrl'] ?? receiptData['imageUrl'] ?? '',
+          userId: userId,
+          imageId: (receiptData['imageId']?.toString()) ?? '',
+          isNewReceipt: true,
+          isPdf: false,
+        ),
+      ),
+    );
   }
 
   Future<void> _openManualReceipt(BuildContext context, String userId) async {
-    // Navigate to manual receipt creation
-    Navigator.pushNamed(context, '/manual-receipt');
+    final emptyReceipt = {
+      'merchant': '',
+      'receiptDate': DateTime.now().toIso8601String(),
+      'amount': '',
+      'category': '',
+    };
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ReceiptDetailsScreen(
+          receipt: emptyReceipt,
+          imageUrl: '',
+          userId: userId,
+          imageId: '',
+          isNewReceipt: true,
+          isPdf: false,
+          isManualReceipt: true,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openTrackDistance(BuildContext context, String userId) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TrackDistanceScreen(
+          userId: userId,
+          token: widget.token,
+        ),
+      ),
+    );
   }
 
 }

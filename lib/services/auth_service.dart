@@ -12,6 +12,7 @@ import 'auth_manager.dart';
 import 'currency_service.dart';
 import 'fcm_service.dart';
 import 'notification_service.dart';
+import 'version_service.dart';
 
 class AuthService {
   final Logger _logger = Logger();
@@ -52,6 +53,7 @@ class AuthService {
     required String password,
     required String country,
     required bool termsAccepted,
+    String? referralCode,
   }) async {
     try {
       _logger.i('Starting email/password signup for: $email');
@@ -63,19 +65,26 @@ class AuthService {
         };
       }
 
+      final requestBody = {
+        "name": name,
+        "email": email,
+        "password": password,
+        "country": country,
+        "termsAccepted": termsAccepted,
+      };
+
+      // Add referral code if provided (auto-uppercase as per API docs)
+      if (referralCode != null && referralCode.trim().isNotEmpty) {
+        requestBody["referralCode"] = referralCode.trim().toUpperCase();
+      }
+
       final response = await http.post(
         Uri.parse("$baseUrl/users/signup"),
         headers: {
           "Content-Type": "application/json",
           "Accept": "application/json",
         },
-        body: jsonEncode({
-          "name": name,
-          "email": email,
-          "password": password,
-          "country": country,
-          "termsAccepted": termsAccepted,
-        }),
+        body: jsonEncode(requestBody),
       );
 
       _logger.i('Signup response status: ${response.statusCode}');
@@ -176,7 +185,7 @@ class AuthService {
       }
 
       _logger.i('Login request payload: ${jsonEncode({
-        "email": email,
+        "emailOrPhone": email,
         "password": "REDACTED",
         "termsAccepted": termsAccepted,
       })}');
@@ -199,7 +208,7 @@ class AuthService {
           "Accept": "application/json",
         },
         body: jsonEncode({
-          "email": email,
+          "emailOrPhone": email,
           "password": password,
           "termsAccepted": termsAccepted,
         }),
@@ -322,6 +331,457 @@ class AuthService {
 
       return {'success': false, 'message': errorMessage};
     }
+  }
+
+  // Helper function to validate E.164 phone format
+  static bool isValidE164Phone(String phone) {
+    // E.164 format: must start with +, followed by country code and number
+    // No spaces or special characters except +
+    final e164Regex = RegExp(r'^\+[1-9]\d{1,14}$');
+    return e164Regex.hasMatch(phone);
+  }
+
+  // Helper function to check if input is email or phone
+  static bool isEmail(String input) {
+    final emailRegex = RegExp(r'^[\w-]+@([\w-]+\.)+[\w-]{2,4}$');
+    return emailRegex.hasMatch(input);
+  }
+
+  // Helper function to check if input is phone (E.164)
+  static bool isPhone(String input) {
+    return isValidE164Phone(input);
+  }
+
+  // Send Phone OTP for Signup
+  Future<Map<String, dynamic>> sendPhoneOTP({
+    required String phone,
+  }) async {
+    try {
+      _logger.i('Sending phone OTP for: $phone');
+
+      if (!isValidE164Phone(phone)) {
+        return {
+          'success': false,
+          'message': 'Invalid phone number format. Must be in E.164 format (e.g., +1234567890)'
+        };
+      }
+
+      // Get headers with version and platform information
+      final headers = await _getHeaders();
+      headers['Content-Type'] = 'application/json';
+      headers['Accept'] = 'application/json';
+
+      final response = await http.post(
+        Uri.parse("$baseUrl/users/auth/phone/send-otp"),
+        headers: headers,
+        body: jsonEncode({
+          "phone": phone,
+        }),
+      );
+
+      _logger.i('Send phone OTP response status: ${response.statusCode}');
+      _logger.i('Send phone OTP response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+        return {
+          'success': true,
+          'message': responseData['message'],
+          'phone': responseData['phone'],
+          'otp': responseData['otp'], // Only in development mode
+        };
+      } else {
+        String errorMessage = 'Failed to send OTP. Please try again.';
+        int? retryAfter;
+        try {
+          final errorData = json.decode(response.body);
+          errorMessage = errorData['message'] ?? errorMessage;
+          retryAfter = errorData['retryAfter'];
+        } catch (e) {
+          _logger.e('Failed to parse error response: $e');
+        }
+
+        return {
+          'success': false,
+          'message': errorMessage,
+          'retryAfter': retryAfter,
+        };
+      }
+    } catch (e) {
+      _logger.e('Error sending phone OTP: $e');
+      return {
+        'success': false,
+        'message': 'An error occurred. Please try again.'
+      };
+    }
+  }
+
+  // Verify Phone OTP for Signup
+  Future<Map<String, dynamic>> verifyPhoneOTP({
+    required String phone,
+    required String otp,
+  }) async {
+    try {
+      _logger.i('Verifying phone OTP for: $phone');
+
+      if (!isValidE164Phone(phone)) {
+        return {
+          'success': false,
+          'message': 'Invalid phone number format. Must be in E.164 format (e.g., +1234567890)'
+        };
+      }
+
+      // Get headers with version and platform information
+      final headers = await _getHeaders();
+      headers['Content-Type'] = 'application/json';
+      headers['Accept'] = 'application/json';
+
+      final response = await http.post(
+        Uri.parse("$baseUrl/users/auth/phone/verify-otp"),
+        headers: headers,
+        body: jsonEncode({
+          "phone": phone,
+          "otp": otp,
+        }),
+      );
+
+      _logger.i('Verify phone OTP response status: ${response.statusCode}');
+      _logger.i('Verify phone OTP response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+        return {
+          'success': true,
+          'message': responseData['message'],
+          'verified': responseData['verified'] ?? true,
+          'userExists': responseData['userExists'] ?? false,
+          'requiresPassword': responseData['requiresPassword'] ?? false,
+        };
+      } else {
+        String errorMessage = 'Invalid or expired OTP. Please try again.';
+        try {
+          final errorData = json.decode(response.body);
+          errorMessage = errorData['message'] ?? errorMessage;
+        } catch (e) {
+          _logger.e('Failed to parse error response: $e');
+        }
+
+        return {
+          'success': false,
+          'message': errorMessage,
+        };
+      }
+    } catch (e) {
+      _logger.e('Error verifying phone OTP: $e');
+      return {
+        'success': false,
+        'message': 'An error occurred. Please try again.'
+      };
+    }
+  }
+
+  // Complete Phone Login/Registration
+  Future<Map<String, dynamic>> completePhoneLogin({
+    required String phone,
+    required String email,
+    required String password,
+    required String country,
+    String? name, // Required for new users only
+    bool termsAccepted = true,
+    String? referralCode,
+  }) async {
+    try {
+      _logger.i('Completing phone login/registration for: $phone');
+
+      if (!termsAccepted) {
+        return {
+          'success': false,
+          'message': 'You must accept the Terms and Conditions to continue.'
+        };
+      }
+
+      if (!isValidE164Phone(phone)) {
+        return {
+          'success': false,
+          'message': 'Invalid phone number format. Must be in E.164 format (e.g., +1234567890)'
+        };
+      }
+
+      final payload = {
+        "phone": phone,
+        "email": email,
+        "password": password,
+        "country": country,
+      };
+
+      if (name != null && name.isNotEmpty) {
+        payload["name"] = name;
+      }
+
+      // Add referral code if provided (auto-uppercase as per API docs)
+      if (referralCode != null && referralCode.trim().isNotEmpty) {
+        payload["referralCode"] = referralCode.trim().toUpperCase();
+      }
+
+      _logger.i('Complete phone login payload: ${jsonEncode({
+        ...payload,
+        "password": "REDACTED",
+      })}');
+
+      // Get headers with version and platform information
+      final headers = await _getHeaders();
+      headers['Content-Type'] = 'application/json';
+      headers['Accept'] = 'application/json';
+
+      final response = await http.post(
+        Uri.parse("$baseUrl/users/auth/phone/complete"),
+        headers: headers,
+        body: jsonEncode(payload),
+      );
+
+      _logger.i('Complete phone login response status: ${response.statusCode}');
+      _logger.i('Complete phone login response body: ${response.body}');
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final responseData = json.decode(response.body);
+        final token = responseData['token'];
+        final user = responseData['user'] ?? {};
+        final userId = user['id']?.toString() ?? responseData['userId']?.toString();
+        final userEmail = user['email'] ?? email;
+        final userName = user['name'] ?? name ?? '';
+        final userCountry = user['country'] ?? country;
+        final List<dynamic> screens = responseData['screens'] ?? [];
+        final bool hasAdminAccess = screens.contains('AdminPanel');
+
+        // Get currency info from country
+        Map<String, String> currencyInfo = {'currency': 'USD', 'symbol': '\$'};
+        if (userCountry != null && userCountry.isNotEmpty) {
+          currencyInfo = CurrencyService.getCurrencyForCountry(userCountry);
+        }
+        final finalCurrency = user['currency'] ?? currencyInfo['currency'];
+        final finalCurrencySymbol = user['currencySymbol'] ?? currencyInfo['symbol'];
+
+        if (token != null && userId != null) {
+          await _authManager.saveAuthData(
+            token: token,
+            userId: userId,
+            email: userEmail,
+            name: userName,
+            country: userCountry,
+            hasAdminAccess: hasAdminAccess,
+            canUpdatePassword: responseData['canUpdatePassword'] ?? responseData['canupdatepassword'] ?? true,
+          );
+
+          // Initialize FCM after successful login
+          if (!kIsWeb) {
+            FCMService.setCurrentUserId(userId);
+            await NotificationService.onUserLogin(userId);
+          }
+
+          return {
+            'success': true,
+            'userId': userId,
+            'token': token,
+            'hasAdminAccess': hasAdminAccess,
+            'currency': finalCurrency,
+            'currencySymbol': finalCurrencySymbol,
+            'country': userCountry,
+            'name': userName,
+            'email': userEmail,
+            'canUpdatePassword': responseData['canUpdatePassword'] ?? responseData['canupdatepassword'] ?? true,
+            'message': responseData['message'] ?? 'Registration/Login successful'
+          };
+        } else {
+          return {
+            'success': false,
+            'message': 'Invalid response from server'
+          };
+        }
+      } else {
+        String errorMessage = 'Failed to complete registration/login. Please try again.';
+        try {
+          final errorData = json.decode(response.body);
+          errorMessage = errorData['message'] ?? errorMessage;
+        } catch (e) {
+          _logger.e('Failed to parse error response: $e');
+        }
+
+        return {
+          'success': false,
+          'message': errorMessage,
+        };
+      }
+    } catch (e) {
+      _logger.e('Error completing phone login: $e');
+      return {
+        'success': false,
+        'message': 'An error occurred. Please try again.'
+      };
+    }
+  }
+
+  // Forgot Password (Updated to support emailOrPhone)
+  Future<Map<String, dynamic>> forgotPassword({
+    required String emailOrPhone,
+  }) async {
+    try {
+      _logger.i('Forgot password request for: $emailOrPhone');
+
+      final response = await http.post(
+        Uri.parse("$baseUrl/users/forgot-password"),
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+        },
+        body: jsonEncode({
+          "emailOrPhone": emailOrPhone,
+        }),
+      );
+
+      _logger.i('Forgot password response status: ${response.statusCode}');
+      _logger.i('Forgot password response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+        return {
+          'success': true,
+          'message': responseData['message'] ?? 'OTP sent successfully',
+        };
+      } else {
+        String errorMessage = 'Failed to send reset OTP. Please try again.';
+        try {
+          final errorData = json.decode(response.body);
+          errorMessage = errorData['message'] ?? errorMessage;
+        } catch (e) {
+          _logger.e('Failed to parse error response: $e');
+        }
+
+        return {
+          'success': false,
+          'message': errorMessage,
+        };
+      }
+    } catch (e) {
+      _logger.e('Error in forgot password: $e');
+      return {
+        'success': false,
+        'message': 'An error occurred. Please try again.'
+      };
+    }
+  }
+
+  // Verify OTP (Updated to support emailOrPhone)
+  Future<Map<String, dynamic>> verifyOTP({
+    required String emailOrPhone,
+    required String otp,
+  }) async {
+    try {
+      _logger.i('Verifying OTP for: $emailOrPhone');
+
+      final headers = await _getHeaders();
+      headers['Content-Type'] = 'application/json';
+
+      final response = await http.post(
+        Uri.parse("$baseUrl/users/verify-otp"),
+        headers: headers,
+        body: jsonEncode({
+          "emailOrPhone": emailOrPhone,
+          "otp": otp,
+        }),
+      );
+
+      _logger.i('Verify OTP response status: ${response.statusCode}');
+      _logger.i('Verify OTP response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+        return {
+          'success': true,
+          'message': responseData['message'] ?? 'OTP verified successfully',
+        };
+      } else {
+        String errorMessage = 'Invalid or expired OTP. Please try again.';
+        try {
+          final errorData = json.decode(response.body);
+          errorMessage = errorData['message'] ?? errorMessage;
+        } catch (e) {
+          _logger.e('Failed to parse error response: $e');
+        }
+
+        return {
+          'success': false,
+          'message': errorMessage,
+        };
+      }
+    } catch (e) {
+      _logger.e('Error verifying OTP: $e');
+      return {
+        'success': false,
+        'message': 'An error occurred. Please try again.'
+      };
+    }
+  }
+
+  // Reset Password (Updated to support emailOrPhone)
+  Future<Map<String, dynamic>> resetPassword({
+    required String emailOrPhone,
+    required String otp,
+    required String newPassword,
+  }) async {
+    try {
+      _logger.i('Resetting password for: $emailOrPhone');
+
+      final response = await http.post(
+        Uri.parse("$baseUrl/users/reset-password"),
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+        },
+        body: jsonEncode({
+          "emailOrPhone": emailOrPhone,
+          "otp": otp,
+          "newPassword": newPassword,
+        }),
+      );
+
+      _logger.i('Reset password response status: ${response.statusCode}');
+      _logger.i('Reset password response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+        return {
+          'success': true,
+          'message': responseData['message'] ?? 'Password reset successfully',
+        };
+      } else {
+        String errorMessage = 'Failed to reset password. Please try again.';
+        try {
+          final errorData = json.decode(response.body);
+          errorMessage = errorData['message'] ?? errorMessage;
+        } catch (e) {
+          _logger.e('Failed to parse error response: $e');
+        }
+
+        return {
+          'success': false,
+          'message': errorMessage,
+        };
+      }
+    } catch (e) {
+      _logger.e('Error resetting password: $e');
+      return {
+        'success': false,
+        'message': 'An error occurred. Please try again.'
+      };
+    }
+  }
+
+  // Helper method to get headers (for verifyOTP)
+  Future<Map<String, String>> _getHeaders() async {
+    if (!VersionService.isInitialized) {
+      await VersionService.initialize();
+    }
+    return VersionService.getHeaders();
   }
 
   // Update Password

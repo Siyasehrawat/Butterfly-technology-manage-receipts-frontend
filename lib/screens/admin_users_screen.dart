@@ -5,6 +5,8 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:intl/intl.dart';
 import '../widgets/curved_background.dart';
 import 'admin_user_details_screen.dart';
+import '../models/pagination_model.dart';
+import '../services/version_service.dart';
 
 class AdminUsersScreen extends StatefulWidget {
   final String adminId;
@@ -23,38 +25,104 @@ class AdminUsersScreen extends StatefulWidget {
 class _AdminUsersScreenState extends State<AdminUsersScreen> {
   bool _isLoading = true;
   List<Map<String, dynamic>> _users = [];
-  List<Map<String, dynamic>> _filteredUsers = [];
   final TextEditingController _searchController = TextEditingController();
   String _sortBy = 'name';
-  bool _sortAscending = true;
+  String _sortOrder = 'ASC';
+  String? _isActiveFilter;
+  PaginationMeta? _pagination;
+  int _currentPage = 1;
+  final int _limit = 50;
   String? _errorMessage;
+  String? _timeRangeFilter;
+
+  static const Map<String, String> _timeFilterOptions = {
+    'today': 'Today',
+    'yesterday': 'Yesterday',
+    'week': 'Past Week',
+    'sixMonths': 'Six Months',
+  };
 
   @override
   void initState() {
     super.initState();
     _fetchUsers();
-    _searchController.addListener(_filterUsers);
+    _searchController.addListener(() {
+      // Reset to page 1 on search change
+      _currentPage = 1;
+      _fetchUsers();
+    });
   }
 
   @override
   void dispose() {
-    _searchController.removeListener(_filterUsers);
     _searchController.dispose();
     super.dispose();
   }
 
-  Future<void> _fetchUsers() async {
+  Future<void> _fetchUsers({int? page}) async {
+    if (page != null) {
+      _currentPage = page;
+    }
+
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
     try {
-      final url = Uri.parse(
-          '${dotenv.env['API_BASE_URL']}/api/admin/users');
+      final isTimeRangeFilterApplied = _timeRangeFilter != null;
+
+      // When a time filter is selected, use simplified payload:
+      // platform, currentVersion, userId, filter
+      Uri uri;
+      if (isTimeRangeFilterApplied) {
+        final platform = VersionService.platform ?? 'unknown';
+        final currentVersion = VersionService.currentVersion ?? '1.0.0';
+
+        final filterParams = <String, String>{
+          'platform': platform,
+          'currentVersion': currentVersion,
+          'userId': widget.adminId,
+          'filter': _timeRangeFilter!,
+        };
+
+        uri = Uri.parse('${dotenv.env['API_BASE_URL']}/api/admin/users')
+            .replace(queryParameters: filterParams);
+      } else {
+        final requestedPage = _currentPage;
+        final requestedLimit = _limit;
+
+        // Default pagination + sorting behavior when no time filter is applied
+        final queryParams = <String, String>{
+          'page': requestedPage.toString(),
+          'limit': requestedLimit.toString(),
+        };
+
+        // Add search parameter
+        if (_searchController.text.isNotEmpty) {
+          queryParams['search'] = _searchController.text.trim();
+        }
+
+        // Add sort parameters (exclude receiptCount as backend doesn't support it)
+        if (_sortBy != 'receiptCount') {
+          // Map lastActive to lastActivity for backend
+          final backendSortBy =
+              _sortBy == 'lastActive' ? 'lastActivity' : _sortBy;
+          queryParams['sortBy'] = backendSortBy;
+          queryParams['sortOrder'] = _sortOrder;
+        }
+
+        // Add active filter if set
+        if (_isActiveFilter != null) {
+          queryParams['isActive'] = _isActiveFilter!;
+        }
+
+        uri = Uri.parse('${dotenv.env['API_BASE_URL']}/api/admin/users')
+            .replace(queryParameters: queryParams);
+      }
 
       final response = await http.get(
-        url,
+        uri,
         headers: {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
@@ -66,11 +134,18 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        final List<dynamic> usersList =
-        data is List ? data : (data['users'] ?? []);
+        final List<dynamic> usersList = data['users'] ?? [];
+        
+        // Parse pagination
+        PaginationMeta? pagination;
+        if (data['pagination'] != null) {
+          pagination = PaginationMeta.fromJson(data['pagination']);
+        }
+
         setState(() {
           _users = List<Map<String, dynamic>>.from(usersList);
-          _applyFiltersAndSort();
+          _sortUsersInPlace();
+          _pagination = pagination;
           _isLoading = false;
         });
       } else {
@@ -124,11 +199,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
       debugPrint('Delete User - Response body: ${response.body}');
 
       if (response.statusCode == 200 || response.statusCode == 204) {
-        // Remove user from local list
-        setState(() {
-          _users.removeWhere((u) => u['id'] == userId);
-          _applyFiltersAndSort();
-        });
+        // Refresh the current page
+        _fetchUsers();
 
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -175,16 +247,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
       debugPrint('Update User - Response body: ${response.body}');
 
       if (response.statusCode == 200) {
-        // Update user in local list
-        setState(() {
-          for (var i = 0; i < _users.length; i++) {
-            if (_users[i]['id'] == userId) {
-              _users[i] = {..._users[i], ...userData};
-              break;
-            }
-          }
-          _applyFiltersAndSort();
-        });
+        // Refresh the current page
+        _fetchUsers();
 
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -206,69 +270,58 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     }
   }
 
-  void _filterUsers() {
-    _applyFiltersAndSort();
-  }
-
-  void _applyFiltersAndSort() {
-    final query = _searchController.text.toLowerCase();
-
-    // Apply filters
-    List<Map<String, dynamic>> filtered = _users.where((user) {
-      // Apply search filter
-      if (query.isNotEmpty) {
-        final name = user['name']?.toString().toLowerCase() ?? '';
-        final email = user['email']?.toString().toLowerCase() ?? '';
-        return name.contains(query) || email.contains(query);
-      }
-
-      return true;
-    }).toList();
-
-    // Apply sorting
-    filtered.sort((a, b) {
-      dynamic valueA = a[_sortBy];
-      dynamic valueB = b[_sortBy];
-
-      // Handle null values
-      if (valueA == null && valueB == null) return 0;
-      if (valueA == null) return _sortAscending ? 1 : -1;
-      if (valueB == null) return _sortAscending ? -1 : 1;
-
-      // Compare values
-      int comparison;
-      if (valueA is String && valueB is String) {
-        comparison = valueA.compareTo(valueB);
-      } else if (valueA is num && valueB is num) {
-        comparison = valueA.compareTo(valueB);
-      } else {
-        // Try to parse dates
-        try {
-          final dateA = DateTime.parse(valueA.toString());
-          final dateB = DateTime.parse(valueB.toString());
-          comparison = dateA.compareTo(dateB);
-        } catch (e) {
-          comparison = valueA.toString().compareTo(valueB.toString());
-        }
-      }
-
-      return _sortAscending ? comparison : -comparison;
-    });
-
-    setState(() {
-      _filteredUsers = filtered;
-    });
-  }
-
   void _changeSortOrder(String field) {
     setState(() {
       if (_sortBy == field) {
-        _sortAscending = !_sortAscending;
+        // Toggle sort order
+        _sortOrder = _sortOrder == 'ASC' ? 'DESC' : 'ASC';
       } else {
         _sortBy = field;
-        _sortAscending = true;
+        _sortOrder = 'ASC';
       }
-      _applyFiltersAndSort();
+      _currentPage = 1; // Reset to first page on sort change
+      _fetchUsers();
+    });
+  }
+
+  /// Parse last-active date from user map (supports lastActive, lastActiveAt, lastActivity).
+  DateTime? _parseLastActive(Map<String, dynamic> user) {
+    final raw = user['lastActive'] ?? user['lastActiveAt'] ?? user['lastActivity'];
+    if (raw == null || raw.toString().isEmpty) return null;
+    try {
+      return DateTime.parse(raw.toString());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Sort _users by current _sortBy and _sortOrder (ensures correct order for last login).
+  void _sortUsersInPlace() {
+    final ascending = _sortOrder == 'ASC';
+    _users.sort((a, b) {
+      switch (_sortBy) {
+        case 'lastActivity':
+          final da = _parseLastActive(a);
+          final db = _parseLastActive(b);
+          if (da == null && db == null) return 0;
+          if (da == null) return ascending ? 1 : -1;
+          if (db == null) return ascending ? -1 : 1;
+          return ascending ? da.compareTo(db) : db.compareTo(da);
+        case 'name':
+          final na = (a['name'] ?? a['fullName'] ?? '').toString().toLowerCase();
+          final nb = (b['name'] ?? b['fullName'] ?? '').toString().toLowerCase();
+          return ascending ? na.compareTo(nb) : nb.compareTo(na);
+        case 'email':
+          final ea = (a['email'] ?? '').toString().toLowerCase();
+          final eb = (b['email'] ?? '').toString().toLowerCase();
+          return ascending ? ea.compareTo(eb) : eb.compareTo(ea);
+        case 'receiptCount':
+          final ra = (a['receiptCount'] ?? a['totalReceipts'] ?? 0) as num;
+          final rb = (b['receiptCount'] ?? b['totalReceipts'] ?? 0) as num;
+          return ascending ? ra.compareTo(rb) : rb.compareTo(ra);
+        default:
+          return 0;
+      }
     });
   }
 
@@ -379,24 +432,75 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                 const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: Column(
                   children: [
-                    // Search Bar
-                    Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: TextField(
-                        controller: _searchController,
-                        decoration: const InputDecoration(
-                          hintText: 'Search users by name or email',
-                          prefixIcon: Icon(Icons.search),
-                          border: InputBorder.none,
-                          contentPadding: EdgeInsets.symmetric(vertical: 15),
+                    Row(
+                      children: [
+                        Flexible(
+                          flex: 3,
+                          child: SizedBox(
+                            height: 56,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: TextField(
+                                controller: _searchController,
+                                decoration: const InputDecoration(
+                                  hintText: 'Search users by name or email',
+                                  prefixIcon: Icon(Icons.search),
+                                  border: InputBorder.none,
+                                  contentPadding:
+                                      EdgeInsets.symmetric(vertical: 15),
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
-                      ),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          flex: 1,
+                          child: SizedBox(
+                            height: 56,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: DropdownButtonHideUnderline(
+                                child: DropdownButton<String?>(
+                                  value: _timeRangeFilter,
+                                  isExpanded: true,
+                                  hint: const Text(
+                                    'Filter',
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  items: [
+                                    const DropdownMenuItem<String?>(
+                                      value: null,
+                                      child: Text('All Time'),
+                                    ),
+                                    ..._timeFilterOptions.entries.map(
+                                      (entry) => DropdownMenuItem<String?>(
+                                        value: entry.key,
+                                        child: Text(entry.value),
+                                      ),
+                                    ),
+                                  ],
+                                  onChanged: (value) {
+                                    setState(() {
+                                      _timeRangeFilter = value;
+                                      _currentPage = 1;
+                                    });
+                                    _fetchUsers();
+                                  },
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 12),
-
                   ],
                 ),
               ),
@@ -448,7 +552,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                       topRight: Radius.circular(20),
                     ),
                   ),
-                  child: _filteredUsers.isEmpty
+                  child: _users.isEmpty
                       ? const Center(
                     child: Text(
                       'No users found',
@@ -502,13 +606,17 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                       // Table Body
                       Expanded(
                         child: ListView.builder(
-                          itemCount: _filteredUsers.length,
+                          itemCount: _users.length,
                           itemBuilder: (context, index) {
-                            final user = _filteredUsers[index];
+                            final user = _users[index];
                             return _buildUserRow(user);
                           },
                         ),
                       ),
+
+                      // Pagination Controls
+                      if (_pagination != null)
+                        _buildPaginationControls(),
                     ],
                   ),
                 ),
@@ -543,10 +651,62 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
           ),
           if (isCurrentSortField)
             Icon(
-              _sortAscending ? Icons.arrow_upward : Icons.arrow_downward,
+              _sortOrder == 'ASC' ? Icons.arrow_upward : Icons.arrow_downward,
               size: 16,
               color: const Color(0xFF7E5EFD),
             ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPaginationControls() {
+    if (_pagination == null) return const SizedBox.shrink();
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: Colors.grey.shade200)),
+        color: Colors.grey.shade50,
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          // Page info
+          Text(
+            'Page ${_pagination!.page} of ${_pagination!.totalPages} (${_pagination!.total} total)',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey.shade700,
+            ),
+          ),
+
+          // Navigation buttons
+          Row(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.chevron_left),
+                onPressed: _pagination!.hasPrevious && !_isLoading
+                    ? () => _fetchUsers(page: _currentPage - 1)
+                    : null,
+                tooltip: 'Previous page',
+              ),
+              Text(
+                '${_pagination!.page}',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.chevron_right),
+                onPressed: _pagination!.hasMore && !_isLoading
+                    ? () => _fetchUsers(page: _currentPage + 1)
+                    : null,
+                tooltip: 'Next page',
+              ),
+            ],
+          ),
         ],
       ),
     );

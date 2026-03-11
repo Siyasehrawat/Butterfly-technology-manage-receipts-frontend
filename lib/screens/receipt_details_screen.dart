@@ -10,6 +10,7 @@ import '../services/currency_conversion_service.dart';
 import '../services/currency_helper_service.dart';
 import '../services/share_intent_api_service.dart';
 import '../models/receipt_models.dart';
+import '../models/receipt_save_result.dart';
 import 'package:intl/intl.dart';
 import 'full_image_view_screen.dart';
 import 'pdf_viewer_screen.dart';
@@ -17,6 +18,7 @@ import '../utils/reminder_settings.dart';
 import '../utils/split_participant.dart';
 import '../widgets/reminder_dialog.dart';
 import '../widgets/split_dialog.dart';
+import '../widgets/duplicate_receipt_badge.dart';
 
 class ReceiptDetailsScreen extends StatefulWidget {
   final Map<String, dynamic> receipt;
@@ -67,6 +69,15 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
   bool _isNewReceipt = false;
   bool _isManualReceipt = false;
   bool _isPdf = false;
+  bool _isMileageReceipt = false; // Track if this is a mileage receipt
+
+  // Distance / mileage metadata (for track distance receipts)
+  double? _distanceMiles;
+  double? _ratePerMile;
+  late TextEditingController _milesController;
+  late TextEditingController _ratePerMileController;
+  bool _editingMiles = false;
+  bool _editingRatePerMile = false;
 
 // Track if any changes were made
   bool _hasChanges = false;
@@ -137,6 +148,7 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
     _isNewReceipt = widget.isNewReceipt;
     _isPdf = widget.isPdf;
     _isManualReceipt = !_isPdf && !_hasPdfUrl() && _detectManualReceipt();
+    _isMileageReceipt = widget.receipt['isDistance'] == true;
 
     // Check for currency conversion requirement
     _needsCurrencyConversion = widget.receipt['needsCurrencyConversion'] == true;
@@ -152,7 +164,28 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
 
     final merchantText = cleanMerchant(widget.receipt['merchant']);
     final dateText = widget.receipt['receiptDate'] ?? '';
-    final amountText = widget.receipt['amount']?.toString() ?? (_isManualReceipt ? '' : '0.00');
+
+    // Initialize distance / mileage fields if present on the receipt
+    double? _parseOptionalDouble(dynamic raw) {
+      if (raw == null) return null;
+      if (raw is num) return raw.toDouble();
+      final cleaned = raw.toString().replaceAll(RegExp(r'[^0-9.\-]'), '');
+      return double.tryParse(cleaned);
+    }
+
+    _distanceMiles = _parseOptionalDouble(widget.receipt['distanceMiles']);
+    _ratePerMile = _parseOptionalDouble(widget.receipt['ratePerMile']);
+    
+    // For mileage receipts, calculate amount from distanceMiles × ratePerMile if not provided
+    String amountText;
+    if (_isMileageReceipt && widget.receipt['amount'] == null) {
+      final miles = _distanceMiles ?? 0;
+      final rate = _ratePerMile ?? 0;
+      amountText = (miles * rate).toStringAsFixed(2);
+    } else {
+      amountText = widget.receipt['amount']?.toString() ?? (_isManualReceipt ? '' : '0.00');
+    }
+    
     final categoryText = widget.receipt['category'] ?? (_isManualReceipt ? '' : 'Uncategorized');
     final commentsText = widget.receipt['comments']?.toString() ?? '';
 
@@ -168,6 +201,18 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
     _originalAmount = amountText;
     _originalCategory = categoryText;
     _originalComments = commentsText;
+
+    // Initialize mileage controllers
+    _milesController = TextEditingController(
+      text: _distanceMiles != null ? _distanceMiles!.toStringAsFixed(2) : '',
+    );
+    _ratePerMileController = TextEditingController(
+      text: _ratePerMile != null ? _ratePerMile!.toStringAsFixed(2) : '',
+    );
+    
+    // Add listeners to track changes
+    _milesController.addListener(_onFieldChanged);
+    _ratePerMileController.addListener(_onFieldChanged);
 
 // Initialize tags from receipt data
     final tagsString = widget.receipt['tags']?.toString() ?? '';
@@ -900,6 +945,7 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
         defaultEmail: userProvider.effectiveEmail, // Ensure email is passed for SSO too
         userId: userProvider.userId, // Add userId for contact fetching
         token: userProvider.token, // Add token for API calls
+        receiptId: widget.receipt['id'] != null ? int.tryParse(widget.receipt['id'].toString()) : null, // Add receiptId
       ),
     );
   }
@@ -1214,6 +1260,8 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
     _categoryController.dispose();
     _tagsController.dispose();
     _commentsController.dispose();
+    _milesController.dispose();
+    _ratePerMileController.dispose();
     _tagInputController.dispose();
     _tagInputFocusNode.dispose();
     _categoryFocusNode.dispose();
@@ -1342,6 +1390,16 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
       _categoryController.text = category;
       _showCategoryDropdown = false;
       _editingCategory = false;
+      
+      // If switching to Mileage category, ensure mileage fields are initialized
+      if (category.toLowerCase() == 'mileage') {
+        if (_distanceMiles != null && _milesController.text.isEmpty) {
+          _milesController.text = _distanceMiles!.toStringAsFixed(2);
+        }
+        if (_ratePerMile != null && _ratePerMileController.text.isEmpty) {
+          _ratePerMileController.text = _ratePerMile!.toStringAsFixed(2);
+        }
+      }
     });
     _checkForChanges();
   }
@@ -1446,16 +1504,39 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
     final Map<String, dynamic> baseReceiptData;
     
     if (_isManualReceipt) {
+      // Check if this is a mileage receipt
+      final isMileageReceipt = widget.receipt['isDistance'] == true || 
+                                _categoryController.text.trim().toLowerCase() == 'mileage';
+      
       baseReceiptData = {
         'userId': widget.userId,
         'merchant': _merchantController.text.trim(),
         'receiptDate': formattedDate,
-        'amount': _amountController.text.trim().replaceAll(RegExp(r'[^\d.]'), ''),
         'category': _categoryController.text.trim(),
         'tags': _tags.join(', '),
         'comments': _commentsController.text.trim(),
         'isManual': true,
       };
+
+      // For mileage receipts: don't send amount, backend calculates it
+      // Send distanceMiles and ratePerMile instead
+      if (isMileageReceipt) {
+        baseReceiptData['isDistance'] = true;
+        
+        final milesValue = double.tryParse(_milesController.text.trim());
+        final rateValue = double.tryParse(_ratePerMileController.text.trim());
+        
+        if (milesValue != null && milesValue > 0) {
+          baseReceiptData['distanceMiles'] = milesValue;
+        }
+        if (rateValue != null && rateValue > 0) {
+          baseReceiptData['ratePerMile'] = rateValue;
+        }
+        // Note: amount is NOT included - backend calculates it as distanceMiles × ratePerMile
+      } else {
+        // For non-mileage receipts, include amount as usual
+        baseReceiptData['amount'] = _amountController.text.trim().replaceAll(RegExp(r'[^\d.]'), '');
+      }
     } else {
       baseReceiptData = {
         'userId': widget.userId,
@@ -1535,6 +1616,7 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
           );
           
           if (response.success) {
+            final pointsAwarded = response.pointsAwarded;
             final successMsg = _isPdf ? 'PDF receipt saved!' : 'Receipt saved!';
             
             setState(() {
@@ -1551,7 +1633,13 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                 ),
               );
 
-              Navigator.pop(context, true); // Return true on successful save
+              Navigator.pop(
+                context,
+                ReceiptSaveResult(
+                  saved: true,
+                  pointsAwarded: pointsAwarded,
+                ),
+              );
             }
           } else {
             throw Exception(response.message);
@@ -1567,8 +1655,32 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
           );
 
           if (response.statusCode == 200 || response.statusCode == 201) {
+            Map<String, dynamic>? responseBody;
+            try {
+              responseBody = json.decode(response.body) as Map<String, dynamic>?;
+            } catch (_) {
+              responseBody = null;
+            }
+
+            final pointsAwarded = _extractPointsAwarded(responseBody);
             final successMsg = _isManualReceipt ? 'Manual receipt saved!' :
             _isPdf ? 'PDF receipt saved!' : 'Receipt saved!';
+
+            // Extract duplicate information
+            String? duplicateWarning;
+            List<DuplicateReceipt>? duplicateReceipts;
+            
+            if (responseBody != null) {
+              if (responseBody['warning'] != null) {
+                duplicateWarning = responseBody['warning'].toString();
+              }
+              
+              if (responseBody['duplicateReceipts'] != null && responseBody['duplicateReceipts'] is List) {
+                duplicateReceipts = (responseBody['duplicateReceipts'] as List)
+                    .map((item) => DuplicateReceipt.fromJson(item as Map<String, dynamic>))
+                    .toList();
+              }
+            }
 
             setState(() {
               _isNewReceipt = false;
@@ -1592,7 +1704,31 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                 ),
               );
 
-              Navigator.pop(context, true); // Return true on successful save
+              // Show duplicate dialog if duplicates found
+              if (duplicateWarning != null && duplicateReceipts != null && duplicateReceipts.isNotEmpty) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  showDialog(
+                    context: context,
+                    builder: (context) => DuplicateReceiptDialog(
+                      duplicateReceipts: duplicateReceipts!,
+                      onViewReceipt: (receiptId) {
+                        // Navigate to receipt details (implement navigation if needed)
+                        // Navigator.push(...);
+                      },
+                    ),
+                  );
+                });
+              }
+
+              Navigator.pop(
+                context,
+                ReceiptSaveResult(
+                  saved: true,
+                  pointsAwarded: pointsAwarded,
+                  duplicateWarning: duplicateWarning,
+                  duplicateReceipts: duplicateReceipts,
+                ),
+              );
             }
           } else {
             throw Exception('Failed to save receipt: ${response.statusCode}');
@@ -1622,7 +1758,10 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
               ),
             );
 
-            Navigator.pop(context, true); // Return true on successful update
+            Navigator.pop(
+              context,
+              const ReceiptSaveResult(saved: true),
+            ); // Return result on successful update
           }
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -1774,6 +1913,45 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
     }
   }
 
+  int? _extractPointsAwarded(dynamic source) {
+    if (source == null) return null;
+
+    if (source is String) {
+      try {
+        final decoded = json.decode(source);
+        return _extractPointsAwarded(decoded);
+      } catch (_) {
+        return ReceiptSaveResult.parsePoints(source);
+      }
+    }
+
+    if (source is Map) {
+      const keys = [
+        'pointsAwarded',
+        'points_awarded',
+        'mrBucksAwarded',
+        'mr_bucks_awarded',
+        'points',
+        'pointsEarned',
+      ];
+
+      for (final key in keys) {
+        if (source.containsKey(key)) {
+          final parsed = ReceiptSaveResult.parsePoints(source[key]);
+          if (parsed != null) return parsed;
+        }
+      }
+
+      for (final key in ['data', 'result', 'payload', 'receipt', 'receiptDetails']) {
+        final nested = source[key];
+        final nestedPoints = _extractPointsAwarded(nested);
+        if (nestedPoints != null) return nestedPoints;
+      }
+    }
+
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     return WillPopScope(
@@ -1821,9 +1999,9 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                 debugPrint('ShareIntent: Failed to cleanup shared file: $e');
               }
             }
-            
-            // Navigate to Dashboard explicitly on discard
-            Navigator.of(context).pushNamedAndRemoveUntil('/dashboard', (route) => false);
+
+            // Pop back to the previous screen (e.g., Track Distance or Dashboard)
+            Navigator.of(context).pop(false);
             return false;
           }
           return false;
@@ -1895,7 +2073,7 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                           TextButton(
                             onPressed: () async {
                               Navigator.pop(context);
-                              
+
                               // Clean up shared file if it exists
                               if (widget.sharedFilePath != null) {
                                 try {
@@ -1911,12 +2089,14 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                                   debugPrint('ShareIntent: Failed to cleanup shared file: $e');
                                 }
                               }
-                              
-                              // Navigate to Dashboard explicitly on discard
-                              Navigator.of(context).pushNamedAndRemoveUntil('/dashboard', (route) => false);
+
+                              // Pop back to the previous screen (e.g., Track Distance or Dashboard)
+                              Navigator.of(context).pop(false);
                             },
-                            child: const Text('Discard',
-                                style: TextStyle(color: Colors.red)),
+                            child: const Text(
+                              'Discard',
+                              style: TextStyle(color: Colors.red),
+                            ),
                           ),
                         ],
                       ),
@@ -1947,20 +2127,13 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Center(
-                  child: Image.asset(
-                    'assets/logo.png',
-                    width: 30,
-                    height: 30,
-                    errorBuilder: (context, error, stackTrace) {
-                      return const Text(
-                        'MR',
-                        style: TextStyle(
-                          color: Color(0xFF7E5EFD),
-                          fontWeight: FontWeight.bold,
-                        ),
-                      );
-                    },
+                child: const Center(
+                  child: Text(
+                    'MR',
+                    style: TextStyle(
+                      color: Color(0xFF7E5EFD),
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
               ),
@@ -1987,6 +2160,7 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                       height: 300,
                       fit: BoxFit.cover,
                       errorBuilder: (context, error, stackTrace) {
+                        debugPrint('Error loading manual.png: $error');
                         return Container(
                           width: double.infinity,
                           height: 300,
@@ -2257,58 +2431,106 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                               ),
                             ),
 
-                            _buildEditableField(
-                              'Amount',
-                              _amountController,
-                              _editingAmount,
-                                  () => setState(
-                                      () => _editingAmount = !_editingAmount),
-                              prefix:
-                              _editingAmount ? '$currencySymbol ' : null,
-                              keyboardType:
-                              const TextInputType.numberWithOptions(
-                                  decimal: true),
-                              formatText: (text) => '$currencySymbol $text',
-                              inputFormatters: [
-                                FilteringTextInputFormatter.allow(
-                                    RegExp(r'[0-9.]')),
-                              ],
-                              isRequired: _isManualReceipt,
-                              valueTrailing: _lineItems.isNotEmpty && !_editingAmount
-                                  ? GestureDetector(
-                                      behavior: HitTestBehavior.opaque,
-                                      onTap: () {
-                                        FocusScope.of(context).unfocus();
-                                        if (_editingAmount) {
-                                          setState(() => _editingAmount = false);
-                                        }
-                                        _showLineItemsDialog();
-                                      },
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Text(
-                                            'Receipt Details',
-                                            style: TextStyle(
-                                              color: Color(0xFF7E5EFD),
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 2),
-                                          Container(
-                                            height: 1,
-                                            width: 35,
-                                            decoration: BoxDecoration(
-                                              color: const Color(0xFF7E5EFD),
-                                              borderRadius: BorderRadius.circular(0.5),
-                                            ),
-                                          ),
-                                        ],
+                            // For mileage receipts, amount is read-only (calculated by backend)
+                            _isMileageReceipt
+                                ? Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'Amount',
+                                        style: TextStyle(
+                                          fontSize: 17,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.black87,
+                                        ),
                                       ),
-                                    )
-                                  : null,
-                            ),
+                                      const SizedBox(height: 2),
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.symmetric(
+                                            vertical: 4, horizontal: 4),
+                                        decoration: BoxDecoration(
+                                          border: Border.all(
+                                              color: Colors.transparent),
+                                          borderRadius:
+                                              BorderRadius.circular(4),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                _amountController.text.isEmpty
+                                                    ? 'Calculated automatically'
+                                                    : '$currencySymbol ${_amountController.text}',
+                                                style: TextStyle(
+                                                  fontSize: 16,
+                                                  color: _amountController
+                                                          .text.isEmpty
+                                                      ? Colors.grey.shade500
+                                                      : Colors.black,
+                                                  fontStyle: _amountController
+                                                          .text.isEmpty
+                                                      ? FontStyle.italic
+                                                      : FontStyle.normal,
+                                                ),
+                                                textAlign: TextAlign.left,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      const Divider(height: 1),
+                                      const SizedBox(height: 8),
+                                    ],
+                                  )
+                                : _buildEditableField(
+                                    'Amount',
+                                    _amountController,
+                                    _editingAmount,
+                                    () => setState(() => _editingAmount = !_editingAmount),
+                                    prefix: _editingAmount ? '$currencySymbol ' : null,
+                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                    formatText: (text) => '$currencySymbol $text',
+                                    inputFormatters: [
+                                      FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                                    ],
+                                    isRequired: _isManualReceipt,
+                                    valueTrailing: _lineItems.isNotEmpty && !_editingAmount
+                                        ? GestureDetector(
+                                            behavior: HitTestBehavior.opaque,
+                                            onTap: () {
+                                              FocusScope.of(context).unfocus();
+                                              if (_editingAmount) {
+                                                setState(() => _editingAmount = false);
+                                              }
+                                              _showLineItemsDialog();
+                                            },
+                                            child: Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Text(
+                                                  'Receipt Details',
+                                                  style: TextStyle(
+                                                    color: Color(0xFF7E5EFD),
+                                                    fontSize: 14,
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 2),
+                                                Container(
+                                                  height: 1,
+                                                  width: 35,
+                                                  decoration: BoxDecoration(
+                                                    color: const Color(0xFF7E5EFD),
+                                                    borderRadius: BorderRadius.circular(0.5),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          )
+                                        : null,
+                                  ),
 
                             _buildCategoryFieldWithDropdown(),
                             _buildTagsField(),
@@ -2482,6 +2704,7 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
         Widget? trailing,
         Widget? valueTrailing,
         Widget? prefixIcon,
+        bool showDivider = true,
       }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2592,8 +2815,12 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                   ),
           ),
         ),
-        const Divider(height: 1),
-        const SizedBox(height: 8),
+        if (showDivider) ...[
+          const Divider(height: 1),
+          const SizedBox(height: 8),
+        ] else ...[
+          const SizedBox(height: 8),
+        ],
       ],
     );
   }
@@ -2680,14 +2907,6 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                             ],
                           );
                         }),
-                        const SizedBox(height: 8),
-                        const Divider(thickness: 1.5),
-                        const SizedBox(height: 4),
-                        Builder(builder: (context) {
-                          final total = _lineItems.fold<double>(0.0, (sum, e) => sum + _parseAmount(e['amount']));
-                          
-                          return _summaryRow('Total', '$currencySymbol${total.toStringAsFixed(2)}', isBold: true);
-                        }),
                       ],
                     ),
                   ),
@@ -2764,14 +2983,29 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                 Row(
                   children: [
                     Expanded(
-                      child: GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            _editingCategory = true;
-                          });
-                          _categoryFocusNode.requestFocus();
-                        },
-                        child: _editingCategory
+                      child: _categoryController.text.trim().toLowerCase() == 'mileage'
+                          ? Container(
+                              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.transparent),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                _categoryController.text,
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  color: Colors.black,
+                                ),
+                              ),
+                            )
+                          : GestureDetector(
+                              onTap: () {
+                                setState(() {
+                                  _editingCategory = true;
+                                });
+                                _categoryFocusNode.requestFocus();
+                              },
+                              child: _editingCategory
                             ? TextField(
                           controller: _categoryController,
                           focusNode: _categoryFocusNode,
@@ -2823,28 +3057,30 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
                         ),
                       ),
                     ),
-                    GestureDetector(
-                      onTap: () {
-                        setState(() {
-                          _showCategoryDropdown = !_showCategoryDropdown;
-                          if (_showCategoryDropdown) {
-                            _editingCategory = true;
-                            _updateFilteredCategories(_categoryController.text);
-                          }
-                        });
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.all(8),
-                        child: Icon(
-                          _showCategoryDropdown ? Icons.arrow_drop_up : Icons.arrow_drop_down,
-                          color: Colors.grey.shade600,
+                    // Hide dropdown arrow for Mileage category
+                    if (_categoryController.text.trim().toLowerCase() != 'mileage')
+                      GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _showCategoryDropdown = !_showCategoryDropdown;
+                            if (_showCategoryDropdown) {
+                              _editingCategory = true;
+                              _updateFilteredCategories(_categoryController.text);
+                            }
+                          });
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          child: Icon(
+                            _showCategoryDropdown ? Icons.arrow_drop_up : Icons.arrow_drop_down,
+                            color: Colors.grey.shade600,
+                          ),
                         ),
                       ),
-                    ),
                   ],
                 ),
 
-                if (_showCategoryDropdown) ...[
+                if (_showCategoryDropdown && _categoryController.text.trim().toLowerCase() != 'mileage') ...[
                   const SizedBox(height: 4),
                   Container(
                     constraints: const BoxConstraints(maxHeight: 200),
@@ -2905,6 +3141,46 @@ class _ReceiptDetailsScreenState extends State<ReceiptDetailsScreen> {
           ],
         ),
 
+        // Additional mileage fields just under category when applicable
+        if (_categoryController.text.trim().toLowerCase() == 'mileage' &&
+            (_distanceMiles != null || _ratePerMile != null)) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _buildEditableField(
+                  'Miles',
+                  _milesController,
+                  _editingMiles,
+                  () => setState(() => _editingMiles = !_editingMiles),
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  inputFormatters: [
+                    FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                  ],
+                  hintText: '0.00',
+                  showDivider: false,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: _buildEditableField(
+                  'Rate per mile',
+                  _ratePerMileController,
+                  _editingRatePerMile,
+                  () => setState(() => _editingRatePerMile = !_editingRatePerMile),
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  inputFormatters: [
+                    FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                  ],
+                  hintText: '0.00',
+                  showDivider: false,
+                ),
+              ),
+            ],
+          ),
+        ],
+
+        // Divider under category, always shown for consistent layout
         const Divider(height: 1),
         const SizedBox(height: 8),
       ],

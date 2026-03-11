@@ -7,6 +7,7 @@ import '../services/api_service_bypass.dart';
 import 'admin_analytics_screen.dart';
 import 'admin_users_screen.dart';
 import 'dashboard_screen.dart';
+import 'workspace_intro_screen.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
   final String adminId;
@@ -550,6 +551,23 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             onTap: () {
               Navigator.pop(context);
               _navigateToMrBucksAdmin();
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.group_work_outlined, color: Color(0xFF7E5EFD)),
+            title: const Text('My Workspace'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => WorkspaceIntroScreen(
+                    userId: widget.adminId,
+                    token: widget.token,
+                    isFromAdmin: true,
+                  ),
+                ),
+              );
             },
           ),
           const Divider(),

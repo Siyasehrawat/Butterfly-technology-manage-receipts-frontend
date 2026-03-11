@@ -5,18 +5,19 @@ import 'package:logger/logger.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'sign_in_screen.dart';
 import '../widgets/curved_background.dart';
+import '../services/auth_service.dart';
 
 class ResetPasswordScreen extends StatefulWidget {
-  final String email;
+  final String emailOrPhone;
   final String otp;
 
   ResetPasswordScreen({
     super.key,
-    required this.email,
+    required this.emailOrPhone,
     required this.otp,
   }) {
     Logger()
-        .i('Navigated to ResetPasswordScreen with email: $email, otp: $otp');
+        .i('Navigated to ResetPasswordScreen with emailOrPhone: $emailOrPhone, otp: $otp');
   }
 
   final Logger _logger = Logger();
@@ -29,6 +30,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   final _newPasswordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
+  final AuthService _authService = AuthService();
   bool _obscureNewPassword = true;
   bool _obscureConfirmPassword = true;
   bool _isLoading = false;
@@ -78,25 +80,14 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
       });
 
       try {
-        final payload = {
-          "email": widget.email,
-          "otp": widget.otp,
-          "newPassword": _newPasswordController.text,
-        };
-
-        widget._logger.i('Payload: ${jsonEncode(payload)}');
-
-        final response = await http.post(
-          Uri.parse(
-              "${dotenv.env['API_BASE_URL']}/api/users/reset-password"),
-          headers: {"Content-Type": "application/json"},
-          body: jsonEncode(payload),
+        final result = await _authService.resetPassword(
+          emailOrPhone: widget.emailOrPhone,
+          otp: widget.otp,
+          newPassword: _newPasswordController.text,
         );
 
-        if (response.statusCode == 200) {
-          final successData = jsonDecode(response.body);
-          widget._logger
-              .i('✅ Password reset successfully: ${successData['message']}');
+        if (result['success']) {
+          widget._logger.i('✅ Password reset successfully: ${result['message']}');
           if (mounted) {
             Navigator.pushAndRemoveUntil(
               context,
@@ -111,9 +102,8 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
             );
           }
         } else {
-          final errorData = jsonDecode(response.body);
           setState(() {
-            _errorMessage = errorData['message'] ?? 'Failed to reset password.';
+            _errorMessage = result['message'] ?? 'Failed to reset password.';
           });
         }
       } catch (e) {

@@ -5,12 +5,13 @@ import 'package:logger/logger.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../widgets/curved_background.dart';
 import '../services/version_service.dart'; // Add this import for version/platform headers
+import '../services/auth_service.dart';
 import 'reset_password_screen.dart'; // Import the ResetPasswordScreen file
 
 class VerifyOtpScreen extends StatefulWidget {
-  final String email;
+  final String emailOrPhone;
 
-  VerifyOtpScreen({super.key, required this.email});
+  VerifyOtpScreen({super.key, required this.emailOrPhone});
 
   // Create a logger instance
   final Logger _logger = Logger();
@@ -22,6 +23,7 @@ class VerifyOtpScreen extends StatefulWidget {
 class _VerifyOtpScreenState extends State<VerifyOtpScreen> {
   final _otpController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
+  final AuthService _authService = AuthService();
   bool _isLoading = false;
   String? _errorMessage;
 
@@ -29,14 +31,6 @@ class _VerifyOtpScreenState extends State<VerifyOtpScreen> {
   void dispose() {
     _otpController.dispose();
     super.dispose();
-  }
-
-  // Get headers with version and platform information
-  Future<Map<String, String>> _getHeaders() async {
-    if (!VersionService.isInitialized) {
-      await VersionService.initialize();
-    }
-    return VersionService.getHeaders();
   }
 
   Future<void> _verifyOtp() async {
@@ -47,41 +41,27 @@ class _VerifyOtpScreenState extends State<VerifyOtpScreen> {
       });
 
       try {
-        // Get headers with version and platform information
-        final headers = await _getHeaders();
-        headers['Content-Type'] = 'application/json';
-
-        final response = await http.post(
-          Uri.parse(
-              "${dotenv.env['API_BASE_URL']}/api/users/verify-otp"),
-          headers: headers, // Use headers with version/platform info
-          body: jsonEncode({
-            "email": widget.email,
-            "otp": _otpController.text,
-          }),
+        final result = await _authService.verifyOTP(
+          emailOrPhone: widget.emailOrPhone,
+          otp: _otpController.text,
         );
 
-        if (response.statusCode == 200) {
-          // Handle success
-          final successData = jsonDecode(response.body);
-          widget._logger
-              .i('✅ OTP verified successfully: ${successData['message']}');
+        if (result['success']) {
+          widget._logger.i('✅ OTP verified successfully: ${result['message']}');
           if (mounted) {
             Navigator.push(
               context,
               MaterialPageRoute(
                 builder: (context) => ResetPasswordScreen(
-                  email: widget.email, // Pass the user's email
+                  emailOrPhone: widget.emailOrPhone, // Pass the user's email or phone
                   otp: _otpController.text, // Pass the OTP
                 ),
               ),
             );
           }
         } else {
-          // Handle error response
-          final errorData = jsonDecode(response.body);
           setState(() {
-            _errorMessage = errorData['message'] ??
+            _errorMessage = result['message'] ??
                 'Invalid or expired OTP. Please try again.';
           });
         }
@@ -124,20 +104,13 @@ class _VerifyOtpScreenState extends State<VerifyOtpScreen> {
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      child: Center(
-                        child: Image.asset(
-                          'assets/logo.png',
-                          width: 30,
-                          height: 30,
-                          errorBuilder: (context, error, stackTrace) {
-                            return const Text(
-                              'MR',
-                              style: TextStyle(
-                                color: Color(0xFF7E5EFD),
-                                fontWeight: FontWeight.bold,
-                              ),
-                            );
-                          },
+                      child: const Center(
+                        child: Text(
+                          'MR',
+                          style: TextStyle(
+                            color: Color(0xFF7E5EFD),
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                     ),
@@ -150,7 +123,7 @@ class _VerifyOtpScreenState extends State<VerifyOtpScreen> {
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 8),
               child: Text(
-                'Verify Email',
+                'Verify OTP',
                 style: TextStyle(
                   fontSize: 24,
                   fontWeight: FontWeight.bold,
@@ -193,7 +166,7 @@ class _VerifyOtpScreenState extends State<VerifyOtpScreen> {
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              "Enter the OTP sent to ${widget.email}",
+                              "Enter the OTP sent to ${widget.emailOrPhone}",
                               style: const TextStyle(
                                 fontSize: 14,
                                 color: Colors.grey,

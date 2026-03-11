@@ -66,5 +66,35 @@ class ReferralService {
       };
     }
   }
+
+  /// Get referral copy text from backend
+  /// Returns refer and earn text for both referrer and referee
+  /// If userId is provided, includes the user's referral code in the response
+  static Future<Map<String, dynamic>?> getReferralCopy(
+    String token, {
+    String? userId,
+  }) async {
+    try {
+      final endpoint = userId != null 
+          ? '/referrals/copy?userId=$userId'
+          : '/referrals/copy';
+      
+      final response = await ApiService.get(
+        endpoint,
+        token: token,
+      );
+
+      if (response.statusCode == 200) {
+        return json.decode(response.body) as Map<String, dynamic>;
+      } else {
+        print('Failed to fetch referral copy: ${response.statusCode}');
+        print('Response body: ${response.body}');
+        return null;
+      }
+    } catch (e) {
+      print('Error fetching referral copy: $e');
+      return null;
+    }
+  }
 }
 

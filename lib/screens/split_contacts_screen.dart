@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/user_provider.dart';
 import '../services/api_service_bypass.dart';
+import '../services/expense_group_service.dart';
 
 class SplitContactsScreen extends StatefulWidget {
   final String userId;
@@ -25,6 +27,7 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   List<Map<String, dynamic>> _filteredContacts = [];
+  Timer? _searchDebounceTimer;
 
   @override
   void initState() {
@@ -49,6 +52,7 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
         statusBarBrightness: Brightness.light,
       ),
     );
+    _searchDebounceTimer?.cancel();
     _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
     super.dispose();
@@ -57,24 +61,19 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
   void _onSearchChanged() {
     setState(() {
       _searchQuery = _searchController.text;
-      _filterContacts();
+    });
+    
+    // Debounce search API calls - wait 500ms after user stops typing
+    _searchDebounceTimer?.cancel();
+    _searchDebounceTimer = Timer(const Duration(milliseconds: 500), () {
+      _fetchContacts(); // Fetch contacts with search parameter
     });
   }
 
   void _filterContacts() {
-    if (_searchQuery.isEmpty) {
-      _filteredContacts = List.from(_contacts);
-    } else {
-      _filteredContacts = _contacts.where((contact) {
-        final name = (contact['name'] ?? '').toString().toLowerCase();
-        final email = (contact['email'] ?? '').toString().toLowerCase();
-        final phone = (contact['phone'] ?? '').toString().toLowerCase();
-        final query = _searchQuery.toLowerCase();
-        return name.contains(query) || 
-               email.contains(query) || 
-               phone.contains(query);
-      }).toList();
-    }
+    // Client-side filtering is now handled by server-side search
+    // This method is kept for backward compatibility but server search is used
+    _filteredContacts = List.from(_contacts);
   }
 
   Future<void> _fetchContacts() async {
@@ -84,63 +83,65 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
     
     try {
       final userProvider = Provider.of<UserProvider>(context, listen: false);
-      final response = await ApiService.get(
-        '/split-bill/contacts/${widget.userId}',
+      
+      // Use search parameter if search query is not empty
+      final result = await ExpenseGroupService.getContacts(
+        userId: widget.userId,
         token: userProvider.token,
+        search: _searchQuery.isNotEmpty ? _searchQuery : null,
+        page: 1,
+        limit: 100, // Fetch more contacts for the contacts screen
       );
 
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        debugPrint('Contacts API Response: $data');
+      if (result['success'] == true) {
+        final allContacts = List<Map<String, dynamic>>.from(result['data'] ?? []);
+        debugPrint('Contacts API Response: ${allContacts.length} contacts');
         
-        // Handle the nested response structure: data.data.contacts
-        final contactsData = data['data'];
-        if (contactsData != null && contactsData['contacts'] != null) {
-          final allContacts = List<Map<String, dynamic>>.from(contactsData['contacts']);
+        // Show all contacts that have valid email addresses
+        final validContacts = allContacts.where((contact) {
+          final hasValidEmail = contact['email'] != null && 
+                               contact['email'].toString().trim().isNotEmpty &&
+                               contact['email'].toString().trim() != 'null';
+          return hasValidEmail;
+        }).toList();
+        
+        // Sort contacts: saved contacts first, then unsaved
+        validContacts.sort((a, b) {
+          final aIsSaved = a['isSavedContact'] == true;
+          final bIsSaved = b['isSavedContact'] == true;
           
-          // Show all contacts that have valid email addresses
-          final validContacts = allContacts.where((contact) {
-            final hasValidEmail = contact['email'] != null && 
-                                 contact['email'].toString().trim().isNotEmpty &&
-                                 contact['email'].toString().trim() != 'null';
-            return hasValidEmail;
-          }).toList();
+          if (aIsSaved && !bIsSaved) return -1;
+          if (!aIsSaved && bIsSaved) return 1;
           
-          // Sort contacts: saved contacts first, then unsaved
-          validContacts.sort((a, b) {
-            final aIsSaved = a['isSavedContact'] == true;
-            final bIsSaved = b['isSavedContact'] == true;
-            
-            if (aIsSaved && !bIsSaved) return -1;
-            if (!aIsSaved && bIsSaved) return 1;
-            
-            // If both have same save status, sort by name (saved contacts) or email (unsaved)
-            final aName = aIsSaved ? (a['name']?.toString() ?? '') : a['email']?.toString() ?? '';
-            final bName = bIsSaved ? (b['name']?.toString() ?? '') : b['email']?.toString() ?? '';
-            return aName.toLowerCase().compareTo(bName.toLowerCase());
-          });
-          
-          setState(() {
-            _contacts = validContacts;
-            _filterContacts();
-          });
-          
-          final savedCount = validContacts.where((c) => c['isSavedContact'] == true).length;
-          final unsavedCount = validContacts.length - savedCount;
-          debugPrint('Loaded ${validContacts.length} contacts: $savedCount saved, $unsavedCount from split receipts');
-        } else {
-          setState(() {
-            _contacts = [];
-            _filterContacts();
-          });
-        }
+          // If both have same save status, sort by name (saved contacts) or email (unsaved)
+          final aName = aIsSaved ? (a['name']?.toString() ?? '') : a['email']?.toString() ?? '';
+          final bName = bIsSaved ? (b['name']?.toString() ?? '') : b['email']?.toString() ?? '';
+          return aName.toLowerCase().compareTo(bName.toLowerCase());
+        });
+        
+        setState(() {
+          _contacts = validContacts;
+          _filteredContacts = List.from(_contacts); // No need for client-side filtering if using server search
+        });
+        
+        final savedCount = validContacts.where((c) => c['isSavedContact'] == true).length;
+        final unsavedCount = validContacts.length - savedCount;
+        debugPrint('Loaded ${validContacts.length} contacts: $savedCount saved, $unsavedCount from split receipts');
       } else {
-        debugPrint('Failed to load contacts: ${response.statusCode} - ${response.body}');
-        _showErrorSnackBar('Failed to load contacts. Please try again.');
+        debugPrint('Failed to load contacts: ${result['error']}');
+        _showErrorSnackBar(result['error']?.toString() ?? 'Failed to load contacts. Please try again.');
+        setState(() {
+          _contacts = [];
+          _filteredContacts = [];
+        });
       }
     } catch (e) {
       debugPrint("Error fetching contacts: $e");
       _showErrorSnackBar('Network error. Please check your internet connection.');
+      setState(() {
+        _contacts = [];
+        _filteredContacts = [];
+      });
     } finally {
       setState(() {
         _isLoading = false;
@@ -333,7 +334,7 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
               ),
               child: const Text(
-                'Add Contact',
+                'Add Contacts',
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
             ),
@@ -1179,20 +1180,13 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
               color: Colors.white,
               borderRadius: BorderRadius.circular(8),
             ),
-            child: Center(
-              child: Image.asset(
-                'assets/logo.png',
-                width: 30,
-                height: 30,
-                errorBuilder: (context, error, stackTrace) {
-                  return const Text(
-                    'MR',
-                    style: TextStyle(
-                      color: Color(0xFF7E5EFD),
-                      fontWeight: FontWeight.bold,
-                    ),
-                  );
-                },
+            child: const Center(
+              child: Text(
+                'MR',
+                style: TextStyle(
+                  color: Color(0xFF7E5EFD),
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
           ),
@@ -1383,6 +1377,11 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
                               final contactId = contact['id']?.toString() ?? '';
                               final isSavedContact = contact['isSavedContact'] == true;
                               
+                              // Check if contact has incomplete information (missing phone number)
+                              final hasIncompleteInfo = phone.isEmpty || phone == 'null' || phone == '';
+                              // Show orange styling if not saved OR if saved but has incomplete info
+                              final needsCompletion = !isSavedContact || (isSavedContact && hasIncompleteInfo);
+                              
                               // For unsaved contacts, show email as name if name is empty
                               final displayName = name.isNotEmpty ? name : 
                                                  (isSavedContact ? 'Unknown' : email.split('@')[0]);
@@ -1393,16 +1392,16 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(12),
                                   side: BorderSide(
-                                    color: isSavedContact ? Colors.grey.shade200 : Colors.orange.shade300,
-                                    width: isSavedContact ? 1 : 2,
+                                    color: needsCompletion ? Colors.orange.shade300 : Colors.grey.shade200,
+                                    width: needsCompletion ? 2 : 1,
                                   ),
                                 ),
                                 elevation: 2,
                                 child: InkWell(
                                   borderRadius: BorderRadius.circular(12),
-                                  onTap: () => isSavedContact 
-                                      ? _showEditContactDialog(contact)
-                                      : _showCompleteContactDialog(contact),
+                                  onTap: () => needsCompletion 
+                                      ? _showCompleteContactDialog(contact)
+                                      : _showEditContactDialog(contact),
                                   child: Padding(
                                     padding: const EdgeInsets.all(16.0),
                                     child: Row(
@@ -1410,9 +1409,9 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
                                         Stack(
                                           children: [
                                             CircleAvatar(
-                                              backgroundColor: isSavedContact 
-                                                  ? const Color(0xFF7E5EFD) 
-                                                  : Colors.orange.shade400,
+                                              backgroundColor: needsCompletion 
+                                                  ? Colors.orange.shade400
+                                                  : const Color(0xFF7E5EFD),
                                               radius: 28,
                                               child: Text(
                                                 displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
@@ -1423,7 +1422,7 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
                                                 ),
                                               ),
                                             ),
-                                            if (!isSavedContact)
+                                            if (needsCompletion)
                                               Positioned(
                                                 bottom: 0,
                                                 right: 0,
@@ -1461,7 +1460,7 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
                                                       ),
                                                     ),
                                                   ),
-                                                  if (!isSavedContact)
+                                                  if (needsCompletion)
                                                     Container(
                                                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                                                       decoration: BoxDecoration(
@@ -1520,7 +1519,7 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
                                                     ),
                                                   ],
                                                 ),
-                                              ] else if (!isSavedContact) ...[
+                                              ] else if (needsCompletion) ...[
                                                 const SizedBox(height: 2),
                                                 Row(
                                                   children: [
@@ -1541,7 +1540,7 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
                                                   ],
                                                 ),
                                               ],
-                                              if (name.isEmpty && !isSavedContact) ...[
+                                              if (name.isEmpty && needsCompletion) ...[
                                                 const SizedBox(height: 2),
                                                 Row(
                                                   children: [
@@ -1583,22 +1582,7 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
                                             }
                                           },
                                           itemBuilder: (BuildContext context) => [
-                                            if (isSavedContact)
-                                              PopupMenuItem<String>(
-                                                value: 'edit',
-                                                child: Row(
-                                                  children: [
-                                                    Icon(
-                                                      Icons.edit_outlined,
-                                                      size: 20,
-                                                      color: Colors.grey.shade700,
-                                                    ),
-                                                    const SizedBox(width: 12),
-                                                    const Text('Edit Contact'),
-                                                  ],
-                                                ),
-                                              )
-                                            else
+                                            if (needsCompletion)
                                               PopupMenuItem<String>(
                                                 value: 'complete',
                                                 child: Row(
@@ -1617,8 +1601,23 @@ class _SplitContactsScreenState extends State<SplitContactsScreen> {
                                                     ),
                                                   ],
                                                 ),
+                                              )
+                                            else
+                                              PopupMenuItem<String>(
+                                                value: 'edit',
+                                                child: Row(
+                                                  children: [
+                                                    Icon(
+                                                      Icons.edit_outlined,
+                                                      size: 20,
+                                                      color: Colors.grey.shade700,
+                                                    ),
+                                                    const SizedBox(width: 12),
+                                                    const Text('Edit Contact'),
+                                                  ],
+                                                ),
                                               ),
-                                            if (isSavedContact)
+                                            if (!needsCompletion)
                                               PopupMenuItem<String>(
                                                 value: 'delete',
                                                 child: Row(

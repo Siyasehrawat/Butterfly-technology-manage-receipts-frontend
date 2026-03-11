@@ -5,6 +5,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'verify_otp_screen.dart';
 import 'package:logger/logger.dart';
 import '../widgets/curved_background.dart';
+import '../services/auth_service.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
   ForgotPasswordScreen({super.key});
@@ -17,18 +18,19 @@ class ForgotPasswordScreen extends StatefulWidget {
 }
 
 class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
-  final _emailController = TextEditingController();
+  final _emailOrPhoneController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
+  final AuthService _authService = AuthService();
   bool _isLoading = false;
   String? _errorMessage;
 
   @override
   void dispose() {
-    _emailController.dispose();
+    _emailOrPhoneController.dispose();
     super.dispose();
   }
 
-  Future<void> _submitEmail() async {
+  Future<void> _submitEmailOrPhone() async {
     if (_formKey.currentState!.validate()) {
       setState(() {
         _isLoading = true;
@@ -36,33 +38,29 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       });
 
       try {
-        final response = await http.post(
-          Uri.parse(
-              "${dotenv.env['API_BASE_URL']}/api/users/forgot-password"),
-          headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"email": _emailController.text}),
+        final emailOrPhone = _emailOrPhoneController.text.trim();
+        final result = await _authService.forgotPassword(
+          emailOrPhone: emailOrPhone,
         );
 
-        if (response.statusCode == 200) {
+        if (result['success']) {
           // Navigate to VerifyOtpScreen
           if (mounted) {
             Navigator.push(
               context,
               MaterialPageRoute(
                 builder: (context) =>
-                    VerifyOtpScreen(email: _emailController.text),
+                    VerifyOtpScreen(emailOrPhone: emailOrPhone),
               ),
             );
           }
         } else {
-          final errorData = jsonDecode(response.body);
           setState(() {
-            _errorMessage =
-                errorData['message'] ?? 'Failed to send reset email.';
+            _errorMessage = result['message'] ?? 'Failed to send reset OTP.';
           });
         }
       } catch (e) {
-        widget._logger.e('Error occurred during email submission: $e');
+        widget._logger.e('Error occurred during email/phone submission: $e');
         setState(() {
           _errorMessage = 'An error occurred. Please try again.';
         });
@@ -100,20 +98,13 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      child: Center(
-                        child: Image.asset(
-                          'assets/logo.png',
-                          width: 30,
-                          height: 30,
-                          errorBuilder: (context, error, stackTrace) {
-                            return const Text(
-                              'MR',
-                              style: TextStyle(
-                                color: Color(0xFF7E5EFD),
-                                fontWeight: FontWeight.bold,
-                              ),
-                            );
-                          },
+                      child: const Center(
+                        child: Text(
+                          'MR',
+                          style: TextStyle(
+                            color: Color(0xFF7E5EFD),
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                     ),
@@ -169,7 +160,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                             ),
                             const SizedBox(height: 8),
                             const Text(
-                              'Enter your email address and we\'ll send you an OTP to reset your password.',
+                              'Enter your email address or phone number and we\'ll send you an OTP to reset your password.',
                               style: TextStyle(
                                 fontSize: 14,
                                 color: Colors.grey,
@@ -193,8 +184,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                                 ),
                               ),
                             TextFormField(
-                              controller: _emailController,
-                              keyboardType: TextInputType.emailAddress,
+                              controller: _emailOrPhoneController,
+                              keyboardType: TextInputType.text,
                               decoration: const InputDecoration(
                                 hintText: 'Email',
                                 contentPadding: EdgeInsets.symmetric(
@@ -204,11 +195,18 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                               ),
                               validator: (value) {
                                 if (value == null || value.isEmpty) {
-                                  return 'Please enter your email';
+                                  return 'Please enter your email or phone number';
                                 }
-                                if (!RegExp(r'^[\w-]+@([\w-]+\.)+[\w-]{2,4}$')
-                                    .hasMatch(value)) {
-                                  return 'Please enter a valid email';
+                                final trimmedValue = value.trim();
+                                // Check if it's an email
+                                final isEmail = RegExp(r'^[\w-]+@([\w-]+\.)+[\w-]{2,4}$')
+                                    .hasMatch(trimmedValue);
+                                // Check if it's E.164 phone format
+                                final isPhone = RegExp(r'^\+[1-9]\d{1,14}$')
+                                    .hasMatch(trimmedValue);
+                                
+                                if (!isEmail && !isPhone) {
+                                  return 'Please enter a valid email or phone number (E.164 format: +1234567890)';
                                 }
                                 return null;
                               },
@@ -218,7 +216,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                               width: double.infinity,
                               height: 50,
                               child: ElevatedButton(
-                                onPressed: _isLoading ? null : _submitEmail,
+                                onPressed: _isLoading ? null : _submitEmailOrPhone,
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: const Color(0xFF7E5EFD),
                                   foregroundColor: Colors.white,

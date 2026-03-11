@@ -13,6 +13,7 @@ import '../providers/feature_flags_provider.dart';
 import '../services/api_service_bypass.dart';
 import '../utils/encryption_helper.dart';
 import '../utils/category_icons.dart';
+import '../models/receipt_save_result.dart';
 import 'receipt_details_screen.dart';
 
 class TaxReportsScreen extends StatefulWidget {
@@ -185,7 +186,7 @@ class _TaxReportsScreenState extends State<TaxReportsScreen> {
       final Map<String, String> queryParams = {
         'userId': widget.userId, // Keep as string for query parameters
         'page': _currentPage.toString(),
-        'pageSize': _pageSize.toString(),
+        'limit': _pageSize.toString(), // Changed from pageSize to limit
       };
 
       // Add filter based on selected option
@@ -223,12 +224,13 @@ class _TaxReportsScreenState extends State<TaxReportsScreen> {
           summary = data['summary'] ?? {};
 
           setState(() {
-            _totalCount = pagination['totalCount'] ?? 0;
-            _hasNextPage = pagination['hasNextPage'] ?? false;
+            // Use new pagination format
+            _totalCount = pagination['total'] ?? pagination['totalCount'] ?? 0;
+            _hasNextPage = pagination['hasMore'] ?? pagination['hasNextPage'] ?? false;
             _exportSummary = summary;
 
             if (_currentPage == 1) {
-              _totalUserReceipts = pagination['totalCount'] ?? 0;
+              _totalUserReceipts = pagination['total'] ?? pagination['totalCount'] ?? 0;
             }
           });
 
@@ -714,20 +716,13 @@ class _TaxReportsScreenState extends State<TaxReportsScreen> {
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: Center(
-                      child: Image.asset(
-                        'assets/logo.png',
-                        width: 30,
-                        height: 30,
-                        errorBuilder: (context, error, stackTrace) {
-                          return const Text(
-                            'MR',
-                            style: TextStyle(
-                              color: Color(0xFF7E5EFD),
-                              fontWeight: FontWeight.bold,
-                            ),
-                          );
-                        },
+                    child: const Center(
+                      child: Text(
+                        'MR',
+                        style: TextStyle(
+                          color: Color(0xFF7E5EFD),
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),
@@ -815,20 +810,13 @@ class _TaxReportsScreenState extends State<TaxReportsScreen> {
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      child: Center(
-                        child: Image.asset(
-                          'assets/logo.png',
-                          width: 30,
-                          height: 30,
-                          errorBuilder: (context, error, stackTrace) {
-                            return const Text(
-                              'MR',
-                              style: TextStyle(
-                                color: Color(0xFF7E5EFD),
-                                fontWeight: FontWeight.bold,
-                              ),
-                            );
-                          },
+                      child: const Center(
+                        child: Text(
+                          'MR',
+                          style: TextStyle(
+                            color: Color(0xFF7E5EFD),
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                     ),
@@ -1173,7 +1161,8 @@ class _TaxReportsScreenState extends State<TaxReportsScreen> {
                                             ),
                                           ),
                                         ).then((result) {
-                                          if (result == true) {
+                                          final saveResult = ReceiptSaveResult.maybeFrom(result);
+                                          if (saveResult?.saved == true) {
                                             setState(() {
                                               _hasChanges = true;
                                             });

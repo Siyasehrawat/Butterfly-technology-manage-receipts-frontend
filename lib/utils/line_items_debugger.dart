@@ -1,4 +1,3 @@
-import 'dart:convert';
 import '../models/receipt_models.dart';
 
 /// Line Items Debugger Utility
@@ -134,6 +133,9 @@ class LineItemsDebugger {
       print('$_prefix ✅ Receipt saved successfully');
       print('$_prefix 📄 Receipt ID: ${response.receiptId ?? 'N/A'}');
       print('$_prefix 📝 Message: ${response.message}');
+      if (response.pointsAwarded != null) {
+        print('$_prefix 🪙 Points awarded: ${response.pointsAwarded}');
+      }
     } else {
       print('$_prefix ❌ Receipt save failed');
       print('$_prefix 📝 Error: ${response.message}');

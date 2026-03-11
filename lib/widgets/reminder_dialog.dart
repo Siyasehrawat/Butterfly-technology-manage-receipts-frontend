@@ -5,6 +5,7 @@ import '../utils/reminder_settings.dart';
 import '../services/api_service_bypass.dart';
 import '../services/calendar_sync_service.dart';
 import '../providers/feature_flags_provider.dart';
+import 'styled_dropdown.dart';
 
 class ReminderDialog extends StatefulWidget {
   final ReminderSettings? currentSettings;
@@ -811,54 +812,15 @@ class _ReminderDialogState extends State<ReminderDialog> {
                                 ),
                               ),
                               const SizedBox(height: 4),
-                              Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  border: Border.all(color: Colors.grey.shade300),
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: LayoutBuilder(
-                                  builder: (context, box) {
-                                    const double fieldHeight = 36;
-                                    return SizedBox(
-                                      height: fieldHeight,
-                                      child: PopupMenuButton<String>(
-                                        constraints: BoxConstraints(
-                                          minWidth: box.maxWidth,
-                                          maxWidth: box.maxWidth,
-                                        ),
-                                        offset: const Offset(0, fieldHeight),
-                                        child: Row(
-                                          children: [
-                                            Expanded(
-                                              child: Text(
-                                                _selectedRecurrence ?? 'None',
-                                                style: const TextStyle(
-                                                  fontSize: 12,
-                                                  color: Colors.black87,
-                                                ),
-                                              ),
-                                            ),
-                                            const Icon(Icons.keyboard_arrow_down, size: 18),
-                                          ],
-                                        ),
-                                        itemBuilder: (BuildContext context) => _recurrenceOptions.map((String choice) {
-                                          return PopupMenuItem<String>(
-                                            value: choice,
-                                            child: Text(choice),
-                                          );
-                                        }).toList(),
-                                        onSelected: (String value) {
-                                          setState(() {
-                                            _selectedRecurrence = value;
-                                          });
-                                        },
-                                      ),
-                                    );
-                                  },
-                                ),
+                              StyledDropdown<String>(
+                                value: _selectedRecurrence,
+                                items: _recurrenceOptions,
+                                placeholder: 'None',
+                                onChanged: (String value) {
+                                  setState(() {
+                                    _selectedRecurrence = value;
+                                  });
+                                },
                               ),
                             ],
                           ),
@@ -892,54 +854,15 @@ class _ReminderDialogState extends State<ReminderDialog> {
                                 ),
                               ),
                               const SizedBox(height: 4),
-                              Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  border: Border.all(color: Colors.grey.shade300),
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: LayoutBuilder(
-                                  builder: (context, box) {
-                                    const double fieldHeight = 36;
-                                    return SizedBox(
-                                      height: fieldHeight,
-                                      child: PopupMenuButton<String>(
-                                        constraints: BoxConstraints(
-                                          minWidth: box.maxWidth,
-                                          maxWidth: box.maxWidth,
-                                        ),
-                                        offset: const Offset(0, fieldHeight),
-                                        child: Row(
-                                          children: [
-                                            Expanded(
-                                              child: Text(
-                                                _selectedRemindBefore ?? '1 day before',
-                                                style: const TextStyle(
-                                                  fontSize: 12,
-                                                  color: Colors.black87,
-                                                ),
-                                              ),
-                                            ),
-                                            const Icon(Icons.keyboard_arrow_down, size: 18),
-                                          ],
-                                        ),
-                                        itemBuilder: (BuildContext context) => _remindBeforeOptions.map((String choice) {
-                                          return PopupMenuItem<String>(
-                                            value: choice,
-                                            child: Text(choice),
-                                          );
-                                        }).toList(),
-                                        onSelected: (String value) {
-                                          setState(() {
-                                            _selectedRemindBefore = value;
-                                          });
-                                        },
-                                      ),
-                                    );
-                                  },
-                                ),
+                              StyledDropdown<String>(
+                                value: _selectedRemindBefore,
+                                items: _remindBeforeOptions,
+                                placeholder: '1 day before',
+                                onChanged: (String value) {
+                                  setState(() {
+                                    _selectedRemindBefore = value;
+                                  });
+                                },
                               ),
                             ],
                           ),

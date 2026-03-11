@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import '../services/api_service_bypass.dart'; // Assuming ApiService is available
+import '../services/document_scan_service.dart';
 import '../widgets/document_details_dialog.dart'; // Import the new dialog widget
 import 'Document_Preview_Screen.dart';
 import 'pdf_viewer_screen.dart'; // <CHANGE> Added import for PDF viewer
@@ -233,8 +234,7 @@ class _MyWalletScreenState extends State<MyWalletScreen> {
         );
       }
     } else if (sourceType == 'take_photo') {
-      final picker = ImagePicker();
-      final pickedFile = await picker.pickImage(source: ImageSource.camera);
+      final pickedFile = await DocumentScanService.captureCroppedDocumentImage();
       if (pickedFile != null) {
         final bytes = await pickedFile.readAsBytes();
         file = PlatformFile(
@@ -565,20 +565,13 @@ class _MyWalletScreenState extends State<MyWalletScreen> {
               color: Colors.white,
               borderRadius: BorderRadius.circular(8),
             ),
-            child: Center(
-              child: Image.asset(
-                'assets/logo.png',
-                width: 30,
-                height: 30,
-                errorBuilder: (context, error, stackTrace) {
-                  return const Text(
-                    'MR',
-                    style: TextStyle(
-                      color: Color(0xFF7E5EFD),
-                      fontWeight: FontWeight.bold,
-                    ),
-                  );
-                },
+            child: const Center(
+              child: Text(
+                'MR',
+                style: TextStyle(
+                  color: Color(0xFF7E5EFD),
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
           ),

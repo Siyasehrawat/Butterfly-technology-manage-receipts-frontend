@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
@@ -12,8 +14,10 @@ import '../providers/user_provider.dart';
 import '../services/api_service_bypass.dart';
 import '../utils/encryption_helper.dart';
 import '../utils/category_icons.dart';
+import '../models/receipt_save_result.dart';
 import 'receipt_details_screen.dart';
 import 'filters_screen.dart';
+import '../web/app/web_search_receipts.dart';
 
 enum ExportFormat { excel, pdf }
 
@@ -60,6 +64,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
 // Track if any changes were made to receipts
   bool _hasChanges = false;
+
+// Debounce timer for search
+  Timer? _searchDebounce;
+
+  // Web layout state
+  bool _showFilters = false;
+  Map<String, dynamic> _webFilterParams = {};
 
   @override
   void initState() {
@@ -109,6 +120,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   @override
   void dispose() {
+    // Cancel search debounce timer
+    _searchDebounce?.cancel();
+    _searchController.dispose();
+    
     // Reset status bar when leaving
     SystemChrome.setSystemUIOverlayStyle(
       const SystemUiOverlayStyle(
@@ -345,8 +360,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
         'pageSize': '10000', // Large enough to get all receipts
       };
 
-      // Add all current filters to query parameters (same as _fetchSavedReceipts)
-      if (filters['merchant'] != null && filters['merchant'].isNotEmpty) {
+      // Add search query as merchant parameter for backend search
+      // Note: Backend uses 'merchant' parameter for search
+      final searchText = _searchController.text.trim();
+      if (searchText.isNotEmpty) {
+        queryParams['merchant'] = searchText;
+      } else if (filters['merchant'] != null && filters['merchant'].isNotEmpty) {
+        // Only use merchant filter if search bar is empty
         queryParams['merchant'] = filters['merchant'];
       }
 
@@ -400,8 +420,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
         // Filter out unsaved receipts (same as in _fetchSavedReceipts)
         allReceipts = allReceipts.where((receipt) => receipt['isSaved'] != false).toList();
 
-        // Apply only client-side search filter locally; date/amount already on server
-        allReceipts = _applyLocalFiltersToReceipts(allReceipts);
+        // All filters including search are now handled by backend
+        // No need for client-side filtering
 
         setState(() {
           for (final receipt in allReceipts) {
@@ -451,28 +471,11 @@ class _ReportsScreenState extends State<ReportsScreen> {
   }
 
 
-  // Helper method to apply local filters (time filter and search filter)
+  // Helper method to apply local filters - search is now handled by backend
   List<Map<String, dynamic>> _applyLocalFiltersToReceipts(List<Map<String, dynamic>> receipts) {
-    List<Map<String, dynamic>> filtered = receipts;
-
-    // Only apply client-side search. All other filters (date, amount, category, tags)
-    // should be handled by the backend via query params for accuracy.
-    final searchQuery = _searchController.text.toLowerCase();
-    if (searchQuery.isNotEmpty) {
-      filtered = filtered.where((receipt) {
-        final merchant = (receipt['merchant'] ?? '').toLowerCase();
-        final category = (receipt['category'] ?? '').toLowerCase();
-        final amount = (receipt['amount'] ?? '').toString().toLowerCase();
-        final date = (receipt['receiptDate'] ?? '').toLowerCase();
-
-        return merchant.contains(searchQuery) ||
-            category.contains(searchQuery) ||
-            amount.contains(searchQuery) ||
-            date.contains(searchQuery);
-      }).toList();
-    }
-
-    return filtered;
+    // All filters including search are now handled by the backend via query params for accuracy.
+    // This method is kept for potential future client-side filtering needs.
+    return receipts;
   }
 
 // UPDATED: Simplified export method with receiptIds instead of imageIds
@@ -508,6 +511,18 @@ class _ReportsScreenState extends State<ReportsScreen> {
     } catch (e) {
       debugPrint('Error parsing custom date range: $e');
     }
+  }
+
+  // Handle search query changes with debouncing
+  void _onSearchChanged(String value) {
+    // Cancel previous timer
+    _searchDebounce?.cancel();
+    
+    // Create new timer
+    _searchDebounce = Timer(const Duration(milliseconds: 500), () {
+      // Reset pagination and fetch from backend when search changes
+      _fetchReceipts(reset: true);
+    });
   }
 
   Future<void> _fetchReceipts({bool reset = false}) async {
@@ -546,8 +561,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
         'pageSize': _pageSize.toString(),
       };
 
-      // Add filters to query parameters
-      if (filters['merchant'] != null && filters['merchant'].isNotEmpty) {
+      // Add search query as merchant parameter for backend search
+      // Note: Backend uses 'merchant' parameter for search, so we prioritize search bar over filter
+      final searchText = _searchController.text.trim();
+      if (searchText.isNotEmpty) {
+        queryParams['merchant'] = searchText;
+      } else if (filters['merchant'] != null && filters['merchant'].isNotEmpty) {
+        // Only use merchant filter if search bar is empty
         queryParams['merchant'] = filters['merchant'];
       }
 
@@ -772,24 +792,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
     }
   }
   void _filterReceipts() {
-    // Backend returns already-filtered results (date, amount, tags, category).
-    // Here we only apply client-side search and then sort for stable ordering.
+    // Backend returns already-filtered results (date, amount, tags, category, and search).
+    // Here we just copy the receipts and sort for stable ordering.
     List<Map<String, dynamic>> baseReceipts = List.from(savedReceipts);
-
-    final searchQuery = _searchController.text.toLowerCase();
-    if (searchQuery.isNotEmpty) {
-      baseReceipts = baseReceipts.where((receipt) {
-        final merchant = (receipt['merchant'] ?? '').toLowerCase();
-        final category = (receipt['category'] ?? '').toLowerCase();
-        final amount = (receipt['amount'] ?? '').toString().toLowerCase();
-        final date = (receipt['receiptDate'] ?? '').toLowerCase();
-
-        return merchant.contains(searchQuery) ||
-            category.contains(searchQuery) ||
-            amount.contains(searchQuery) ||
-            date.contains(searchQuery);
-      }).toList();
-    }
 
     _filteredReceipts = baseReceipts;
 
@@ -814,16 +819,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
       // Sort by most recent date first
       return dateB.compareTo(dateA);
     });
-
-    // Only calculate total locally when a client-side search is active.
-    if (_currentPage == 1 && _searchController.text.isNotEmpty) {
-      final localTotal = _filteredReceipts.fold(0.0, (sum, receipt) {
-        final amount = double.tryParse(receipt['amount']?.toString() ?? '0') ?? 0;
-        return sum + amount;
-      });
-      _totalAmount = localTotal;
-      debugPrint('Updated total amount with client-side search: $_totalAmount');
-    }
   }
 
   Future<void> _exportReceipts({
@@ -1099,8 +1094,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
             () {
           setState(() {
             _searchController.clear();
-            _filterReceipts();
           });
+          // Fetch from backend after clearing search
+          _fetchReceipts(reset: true);
         },
       ));
     }
@@ -1398,6 +1394,155 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final userProvider = Provider.of<UserProvider>(context);
     final currencySymbol = userProvider.effectiveCurrencySymbol;
 
+    // Use web-optimized layout for web platform
+    if (kIsWeb) {
+      return WebSearchReceiptsLayout(
+        userId: widget.userId,
+        token: userProvider.token ?? '',
+        savedReceipts: _filteredReceipts,
+        isLoading: _isLoading,
+        isLoadingMore: _isLoadingMore,
+        onSearchChanged: (value) {
+          _onSearchChanged(value);
+        },
+        onRefresh: () => _fetchReceipts(reset: true),
+        onReceiptTap: (context, receipt) async {
+          try {
+            final receiptId = receipt['id']?.toString() ?? '';
+            if (receiptId.isEmpty) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Receipt ID not found'),
+                  backgroundColor: Colors.red,
+                ),
+              );
+              return;
+            }
+
+            // Get token from UserProvider
+            final token = userProvider.token ?? '';
+            if (token.isEmpty) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Authentication token not found'),
+                  backgroundColor: Colors.red,
+                ),
+              );
+              return;
+            }
+
+            final response = await ApiService.get(
+              '/receipts/details/$receiptId?userId=${widget.userId}',
+              token: token,
+            );
+
+            if (response.statusCode == 200) {
+              final data = json.decode(response.body);
+              final freshReceipt = data['receipt'] as Map<String, dynamic>? ?? receipt;
+
+              // Decrypt image URL if needed
+              final encryptedImageLink = freshReceipt['imageLink'] as String? ??
+                  freshReceipt['imageUrl'] as String?;
+              String decryptedImageUrl = freshReceipt['decryptedImageUrl'] as String? ??
+                  freshReceipt['decryptedImageLink'] as String? ??
+                  '';
+              
+              if (decryptedImageUrl.isEmpty && encryptedImageLink != null) {
+                final decrypted = EncryptionHelper.decryptUrl(encryptedImageLink);
+                if (decrypted != null) {
+                  decryptedImageUrl = decrypted;
+                  freshReceipt['decryptedImageLink'] = decryptedImageUrl;
+                }
+              }
+              
+              // Fallback to original if decryption failed
+              if (decryptedImageUrl.isEmpty) {
+                decryptedImageUrl = encryptedImageLink ?? '';
+              }
+
+              final isPdfFresh = _isPdfReceipt(freshReceipt);
+              final isManualFresh = _isManualReceipt(freshReceipt);
+
+              if (context.mounted) {
+                final result = await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => ReceiptDetailsScreen(
+                      receipt: freshReceipt,
+                      imageUrl: decryptedImageUrl,
+                      userId: widget.userId,
+                      imageId: freshReceipt['imageId']?.toString() ?? '',
+                      isNewReceipt: false,
+                      isPdf: isPdfFresh,
+                      isManualReceipt: isManualFresh,
+                    ),
+                  ),
+                );
+
+                if (result == true) {
+                  _fetchReceipts(reset: true);
+                }
+              }
+            }
+          } catch (e) {
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Failed to load receipt: $e'),
+                  backgroundColor: Colors.red,
+                ),
+              );
+            }
+          }
+        },
+        onLogout: () {
+          // Handle logout
+        },
+        onNavigateToReports: () {
+          // Already on reports screen
+        },
+        onExportCSV: () {
+          _selectedFormat = ExportFormat.excel;
+          _exportSelectedReceipts();
+        },
+        onExportPDF: () {
+          _selectedFormat = ExportFormat.pdf;
+          _exportSelectedReceipts();
+        },
+        onPrintReceipts: () {
+          // Handle print
+          _exportSelectedReceipts();
+        },
+        currentPage: _currentPage,
+        totalCount: _filteredTotalReceipts > 0 ? _filteredTotalReceipts : _totalCount,
+        hasNextPage: _hasNextPage,
+        onPageChanged: (page) {
+          setState(() {
+            _currentPage = page;
+          });
+          _fetchReceipts(reset: false);
+        },
+        onToggleFilters: () {
+          setState(() {
+            _showFilters = !_showFilters;
+          });
+        },
+        showFilters: _showFilters,
+        filterParams: _webFilterParams,
+        onFilterChanged: (params) {
+          setState(() {
+            _webFilterParams = {..._webFilterParams, ...params};
+          });
+          // Apply filters to ReceiptProvider
+          final receiptProvider = Provider.of<ReceiptProvider>(context, listen: false);
+          params.forEach((key, value) {
+            receiptProvider.updateFilter(key, value);
+          });
+          _fetchReceipts(reset: true);
+        },
+      );
+    }
+
     return Scaffold(
       body: Column(
         children: [
@@ -1420,7 +1565,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 const Expanded(
                   child: Center(
                     child: Text(
-                      'Reports',
+                      'Search Receipts',
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 20,
@@ -1438,20 +1583,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: Center(
-                    child: Image.asset(
-                      'assets/logo.png',
-                      width: 30,
-                      height: 30,
-                      errorBuilder: (context, error, stackTrace) {
-                        return const Text(
-                          'MR',
-                          style: TextStyle(
-                            color: Color(0xFF7E5EFD),
-                            fontWeight: FontWeight.bold,
-                          ),
-                        );
-                      },
+                  child: const Center(
+                    child: Text(
+                      'MR',
+                      style: TextStyle(
+                        color: Color(0xFF7E5EFD),
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                 ),
@@ -1547,16 +1685,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
                               controller: _searchController,
                               decoration: const InputDecoration(
                                 hintText:
-                                'Search by merchant, category, or date',
+                                'Search by merchant name',
                                 border: InputBorder.none,
                                 contentPadding: EdgeInsets.symmetric(
                                     horizontal: 12, vertical: 14),
                               ),
-                              onChanged: (value) {
-                                setState(() {
-                                  _filterReceipts();
-                                });
-                              },
+                              onChanged: _onSearchChanged,
                             ),
                           ),
                           IconButton(
@@ -1932,14 +2066,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                           ),
                                         ),
                                       ).then((result) {
-                                        // Track if changes were made and refresh if needed
-                                        if (result == true) {
+                                        final saveResult = ReceiptSaveResult.maybeFrom(result);
+                                        if (saveResult?.saved == true) {
                                           setState(() {
                                             _hasChanges = true;
                                           });
                                           _fetchReceipts(reset: true);
                                         }
-                                        // If result is null or false, don't refresh (no changes made)
                                       });
                                     } else {
                                       // API failed, show error

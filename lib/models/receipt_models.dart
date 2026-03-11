@@ -159,17 +159,58 @@ class LineItem {
   }
 }
 
+/// Duplicate Receipt Model
+class DuplicateReceipt {
+  final int id;
+  final String merchant;
+  final double amount;
+  final String receiptDate;
+  
+  DuplicateReceipt({
+    required this.id,
+    required this.merchant,
+    required this.amount,
+    required this.receiptDate,
+  });
+  
+  factory DuplicateReceipt.fromJson(Map<String, dynamic> json) {
+    return DuplicateReceipt(
+      id: json['id'] is int ? json['id'] : int.tryParse(json['id'].toString()) ?? 0,
+      merchant: json['merchant']?.toString() ?? '',
+      amount: (json['amount'] is num) ? (json['amount'] as num).toDouble() : double.tryParse(json['amount'].toString()) ?? 0.0,
+      receiptDate: json['receiptDate']?.toString() ?? '',
+    );
+  }
+  
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'merchant': merchant,
+      'amount': amount,
+      'receiptDate': receiptDate,
+    };
+  }
+}
+
 /// Save Receipt Response Model
 class SaveReceiptResponse {
   final bool success;
   final String message;
   final String? receiptId;
+  final int? pointsAwarded;
+  final String? warning;
+  final List<DuplicateReceipt>? duplicateReceipts;
   
   SaveReceiptResponse({
     required this.success,
     required this.message,
     this.receiptId,
+    this.pointsAwarded,
+    this.warning,
+    this.duplicateReceipts,
   });
+  
+  bool get hasDuplicates => warning != null && duplicateReceipts != null && duplicateReceipts!.isNotEmpty;
   
   factory SaveReceiptResponse.fromJson(Map<String, dynamic> json) {
     // Check if the response indicates success based on the actual API response structure
@@ -198,10 +239,27 @@ class SaveReceiptResponse {
       extractedReceiptId = json['id'].toString();
     }
     
+    // Extract duplicate information
+    String? warning;
+    List<DuplicateReceipt>? duplicateReceipts;
+    
+    if (json['warning'] != null) {
+      warning = json['warning'].toString();
+    }
+    
+    if (json['duplicateReceipts'] != null && json['duplicateReceipts'] is List) {
+      duplicateReceipts = (json['duplicateReceipts'] as List)
+          .map((item) => DuplicateReceipt.fromJson(item as Map<String, dynamic>))
+          .toList();
+    }
+    
     return SaveReceiptResponse(
       success: success,
       message: json['message'] ?? '',
       receiptId: extractedReceiptId,
+      pointsAwarded: _extractPointsAwarded(json),
+      warning: warning,
+      duplicateReceipts: duplicateReceipts,
     );
   }
   
@@ -210,6 +268,9 @@ class SaveReceiptResponse {
       'success': success,
       'message': message,
       if (receiptId != null) 'receiptId': receiptId,
+      if (pointsAwarded != null) 'pointsAwarded': pointsAwarded,
+      if (warning != null) 'warning': warning,
+      if (duplicateReceipts != null) 'duplicateReceipts': duplicateReceipts!.map((d) => d.toJson()).toList(),
     };
   }
 }
@@ -269,4 +330,40 @@ class ShareIntentResult {
       receiptDetails: receiptDetails,
     );
   }
+}
+
+int? _extractPointsAwarded(Map<String, dynamic> source) {
+  const possibleKeys = [
+    'pointsAwarded',
+    'points_awarded',
+    'mrBucksAwarded',
+    'mr_bucks_awarded',
+    'points',
+    'pointsEarned',
+  ];
+
+  for (final key in possibleKeys) {
+    if (source.containsKey(key)) {
+      final parsed = _parsePointsValue(source[key]);
+      if (parsed != null) return parsed;
+    }
+  }
+
+  for (final key in ['data', 'result', 'payload', 'receipt', 'receiptDetails']) {
+    final nested = source[key];
+    if (nested is Map<String, dynamic>) {
+      final nestedPoints = _extractPointsAwarded(nested);
+      if (nestedPoints != null) return nestedPoints;
+    }
+  }
+
+  return null;
+}
+
+int? _parsePointsValue(dynamic value) {
+  if (value == null) return null;
+  if (value is int) return value;
+  if (value is double) return value.round();
+  if (value is String) return int.tryParse(value);
+  return null;
 }

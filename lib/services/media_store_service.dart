@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import '../services/document_scan_service.dart';
 
 class MediaStoreService {
   static final MediaStoreService _instance = MediaStoreService._internal();
@@ -101,13 +102,7 @@ class MediaStoreService {
         throw Exception('Camera permission denied');
       }
 
-      final picker = ImagePicker();
-      return await picker.pickImage(
-        source: ImageSource.camera,
-        imageQuality: 85, // Compress to reduce file size
-        maxWidth: 1920,
-        maxHeight: 1920,
-      );
+      return await DocumentScanService.captureCroppedDocumentImage();
     } catch (e) {
       debugPrint('Error taking photo with camera: $e');
       rethrow;

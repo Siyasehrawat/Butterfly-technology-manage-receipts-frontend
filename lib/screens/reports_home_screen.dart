@@ -9,11 +9,14 @@ import 'expense_reports_screen.dart';
 import 'reports_screen.dart';
 import '../widgets/upload_bottom_sheet.dart';
 import 'receipt_details_screen.dart';
+import 'track_distance_screen.dart';
 import '../providers/receipt_provider.dart';
+import '../utils/country_utils.dart';
 import 'package:image_picker/image_picker.dart';
 import 'wallet_screen.dart';
 import 'wallet_pin_entry_screen.dart';
 import 'wallet_onboarding_screen.dart';
+import '../widgets/app_bottom_nav_bar.dart';
 
 class ReportsHomeScreen extends StatefulWidget {
   const ReportsHomeScreen({super.key});
@@ -116,7 +119,8 @@ class _ReportsHomeScreenState extends State<ReportsHomeScreen> {
                       crossAxisCount: 2,
                       crossAxisSpacing: 16,
                       mainAxisSpacing: 16,
-                      childAspectRatio: 1.1,
+                      // Slightly taller cards to prevent text overflow on smaller screens
+                      childAspectRatio: 0.9,
                       children: _buildReportOptions(context, featureFlags, userId, token),
                     ),
                   ),
@@ -126,46 +130,33 @@ class _ReportsHomeScreenState extends State<ReportsHomeScreen> {
           ),
         ],
       ),
-      bottomNavigationBar: Consumer<FeatureFlagsProvider>(
-        builder: (context, featureFlagsProvider, child) {
-          final isWalletEnabled = featureFlagsProvider.isWalletEnabled;
-          
-          return BottomNavigationBar(
-            type: BottomNavigationBarType.fixed,
-            backgroundColor: Colors.white,
-            selectedItemColor: const Color(0xFF7E5EFD),
-            unselectedItemColor: Colors.grey.shade600,
-            selectedFontSize: 12,
-            unselectedFontSize: 12,
-            currentIndex: 1, // Reports is selected
-            onTap: (index) => _onBottomNavTap(context, index),
-            items: [
-              const BottomNavigationBarItem(
-                icon: Icon(Icons.home_outlined, size: 26),
-                activeIcon: Icon(Icons.home, size: 28),
-                label: 'Home',
-              ),
-              const BottomNavigationBarItem(
-                icon: Icon(Icons.analytics_outlined, size: 26),
-                activeIcon: Icon(Icons.analytics, size: 28),
-                label: 'Reports',
-              ),
-              const BottomNavigationBarItem(
-                icon: Icon(Icons.add_circle_outline, size: 26),
-                activeIcon: Icon(Icons.add_circle, size: 28),
-                label: 'Upload',
-              ),
-              const BottomNavigationBarItem(
-                icon: Icon(Icons.savings_outlined, size: 26),
-                activeIcon: Icon(Icons.savings, size: 28),
-                label: 'MR Bucks',
-              ),
-              const BottomNavigationBarItem(
-                icon: Icon(Icons.more_horiz, size: 26),
-                activeIcon: Icon(Icons.more_horiz, size: 28),
-                label: 'More',
-              ),
-            ],
+      bottomNavigationBar: AppBottomNavBar(
+        currentRoute: 'reports',
+        userId: userId,
+        token: token,
+        onUploadTap: () {
+          final userProvider = Provider.of<UserProvider>(context, listen: false);
+          final currentUserId = userProvider.userId ?? '';
+          final country = userProvider.country;
+          UploadSheet.show(
+            context,
+            country: country,
+            onAction: (action) async {
+              switch (action) {
+                case UploadAction.camera:
+                  await _handleUploadFromHere(context, currentUserId, source: ImageSource.camera);
+                  break;
+                case UploadAction.gallery:
+                  await _handleUploadFromHere(context, currentUserId, source: ImageSource.gallery);
+                  break;
+                case UploadAction.manual:
+                  await _openManualReceipt(context, currentUserId);
+                  break;
+                case UploadAction.trackDistance:
+                  await _openTrackDistance(context, currentUserId);
+                  break;
+              }
+            },
           );
         },
       ),
@@ -214,13 +205,13 @@ class _ReportsHomeScreenState extends State<ReportsHomeScreen> {
       );
     }
 
-    // Custom Reports
+    // Search Reports
     if (featureFlags.isCustomReportsEnabled) {
       options.add(
         _buildReportCard(
           context,
           icon: Icons.pie_chart,
-          title: 'Custom Reports',
+          title: 'Search Receipts',
           subtitle: '',
           onTap: () => _navigateToCustomReports(context, userId),
         ),
@@ -296,6 +287,7 @@ class _ReportsHomeScreenState extends State<ReportsHomeScreen> {
             padding: const EdgeInsets.all(20),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 // Icon
                 Container(
@@ -322,18 +314,25 @@ class _ReportsHomeScreenState extends State<ReportsHomeScreen> {
                     color: Colors.black87,
                   ),
                   textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  softWrap: true,
                 ),
-                const SizedBox(height: 4),
-                
-                // Subtitle
-                Text(
-                  subtitle,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.grey.shade600,
+                if (subtitle.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  // Subtitle
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey.shade600,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    softWrap: true,
                   ),
-                  textAlign: TextAlign.center,
-                ),
+                ],
               ],
             ),
           ),
@@ -405,6 +404,18 @@ class _ReportsHomeScreenState extends State<ReportsHomeScreen> {
   }
 
   void _onBottomNavTap(BuildContext context, int index) {
+    final featureFlagsProvider = Provider.of<FeatureFlagsProvider>(context, listen: false);
+    final isMrBucksEnabled = featureFlagsProvider.isMrBucksEnabled;
+    
+    // If mr bucks is disabled, adjust index mapping
+    // When disabled: Home(0), Reports(1), Upload(2), More(3)
+    // When enabled: Home(0), Reports(1), Upload(2), MR Bucks(3), More(4)
+    if (!isMrBucksEnabled && index == 3) {
+      // This is the "More" tab when mr bucks is disabled
+      Navigator.pushNamed(context, '/more');
+      return;
+    }
+    
     switch (index) {
       case 0: // Home
         Navigator.pushNamedAndRemoveUntil(
@@ -417,29 +428,43 @@ class _ReportsHomeScreenState extends State<ReportsHomeScreen> {
         // Already on reports screen, do nothing
         break;
       case 2: // Upload
-        final currentUserId = Provider.of<UserProvider>(context, listen: false).userId ?? '';
-        UploadSheet.show(context, onAction: (action) async {
-          switch (action) {
-            case UploadAction.camera:
-              await _handleUploadFromHere(context, currentUserId, source: ImageSource.camera);
-              break;
-            case UploadAction.gallery:
-              await _handleUploadFromHere(context, currentUserId, source: ImageSource.gallery);
-              break;
-            case UploadAction.manual:
-              await _openManualReceipt(context, currentUserId);
-              break;
-          }
-        });
+        final userProvider = Provider.of<UserProvider>(context, listen: false);
+        final currentUserId = userProvider.userId ?? '';
+        final country = userProvider.country;
+        UploadSheet.show(
+          context,
+          country: country,
+          onAction: (action) async {
+            switch (action) {
+              case UploadAction.camera:
+                await _handleUploadFromHere(context, currentUserId, source: ImageSource.camera);
+                break;
+              case UploadAction.gallery:
+                await _handleUploadFromHere(context, currentUserId, source: ImageSource.gallery);
+                break;
+              case UploadAction.manual:
+                await _openManualReceipt(context, currentUserId);
+                break;
+              case UploadAction.trackDistance:
+                await _openTrackDistance(context, currentUserId);
+                break;
+            }
+          },
+        );
         break;
-      case 3: // MR Bucks
-        Navigator.pushNamed(context, '/mr_bucks');
+      case 3: // MR Bucks (only if enabled)
+        if (isMrBucksEnabled) {
+          Navigator.pushNamed(context, '/mr_bucks');
+        }
         break;
-      case 4: // More
-        Navigator.pushNamed(context, '/more');
+      case 4: // More (only if mr bucks is enabled)
+        if (isMrBucksEnabled) {
+          Navigator.pushNamed(context, '/more');
+        }
         break;
     }
   }
+
 
   Future<void> _handleUploadFromHere(BuildContext context, String userId, {required ImageSource source}) async {
     final receiptProvider = Provider.of<ReceiptProvider>(context, listen: false);
@@ -484,6 +509,19 @@ class _ReportsHomeScreenState extends State<ReportsHomeScreen> {
           isNewReceipt: true,
           isPdf: false,
           isManualReceipt: true,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openTrackDistance(BuildContext context, String userId) async {
+    final token = Provider.of<UserProvider>(context, listen: false).token ?? '';
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TrackDistanceScreen(
+          userId: userId,
+          token: token,
         ),
       ),
     );

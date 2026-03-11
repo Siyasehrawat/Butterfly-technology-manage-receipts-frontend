@@ -1,12 +1,30 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:image_picker/image_picker.dart';
 import '../services/api_service_bypass.dart';
 import '../services/redemption_service.dart';
+import '../services/rewards_service.dart';
+import '../services/referral_service.dart';
 import '../providers/user_provider.dart';
+import 'package:flutter/services.dart';
+import '../widgets/upload_bottom_sheet.dart';
+import '../widgets/app_bottom_nav_bar.dart';
+import 'refer_earn_screen.dart';
+import 'receipt_details_screen.dart';
+import 'track_distance_screen.dart';
+import '../providers/receipt_provider.dart';
+
+const LinearGradient _mrBucksGradient = LinearGradient(
+  colors: [Color(0xFFFF9500), Color(0xFFFF7300)],
+  begin: Alignment.topRight,
+  end: Alignment.bottomLeft,
+);
 
 class MrBucksScreen extends StatefulWidget {
   const MrBucksScreen({super.key});
@@ -15,7 +33,7 @@ class MrBucksScreen extends StatefulWidget {
   State<MrBucksScreen> createState() => _MrBucksScreenState();
 }
 
-class _MrBucksScreenState extends State<MrBucksScreen> {
+class _MrBucksScreenState extends State<MrBucksScreen> with WidgetsBindingObserver {
   // Redemption state
   int? _selectedPoints;
   String? _selectedPartner;
@@ -47,12 +65,105 @@ class _MrBucksScreenState extends State<MrBucksScreen> {
   bool _checkingTermsStatus = true;
   String? _termsText;
 
+  // Earn rules state
+  List<Map<String, dynamic>> _earnRules = [];
+  bool _loadingEarnRules = false;
+  String? _earnRulesError;
+
+  // Coin shower animation state
+  int? _previousBalance;
+  bool _showCoinShower = false;
+  bool _isScreenVisible = false;
+  String? _lastSeenTransactionId; // Track the most recent transaction ID we've seen
+
+  // Referral copy state
+  String? _referralCode;
+  String _referralCardDescription = '';
+  String _referralBannerHeadline = '';
+  bool _loadingReferralCopy = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadLastSeenTransactionId();
       _checkTermsStatus();
+      _fetchEarnRules();
+      _loadReferralCopy();
     });
+  }
+
+  /// Load the last seen transaction ID from SharedPreferences
+  Future<void> _loadLastSeenTransactionId() async {
+    try {
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      final userId = userProvider.userId;
+      if (userId == null || userId.isEmpty) return;
+
+      final prefs = await SharedPreferences.getInstance();
+      final lastSeenId = prefs.getString('mr_bucks_last_transaction_$userId');
+      if (lastSeenId != null && lastSeenId.isNotEmpty) {
+        setState(() {
+          _lastSeenTransactionId = lastSeenId;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading last seen transaction ID: $e');
+    }
+  }
+
+  /// Save the last seen transaction ID to SharedPreferences
+  Future<void> _saveLastSeenTransactionId(String transactionId) async {
+    try {
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      final userId = userProvider.userId;
+      if (userId == null || userId.isEmpty) return;
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('mr_bucks_last_transaction_$userId', transactionId);
+      setState(() {
+        _lastSeenTransactionId = transactionId;
+      });
+    } catch (e) {
+      debugPrint('Error saving last seen transaction ID: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Check if screen is visible and refresh if needed
+    final route = ModalRoute.of(context);
+    if (route != null && route.isCurrent) {
+      if (!_isScreenVisible) {
+        _isScreenVisible = true;
+        // Refresh summary when screen becomes visible to check for new points
+        // The _fetchSummary method will automatically detect new transactions and show animation
+        if (_termsAccepted && !_loadingSummary) {
+          _fetchSummary();
+        }
+      }
+    } else {
+      _isScreenVisible = false;
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Refresh summary when app resumes to check for new points
+      // The _fetchSummary method will automatically detect new transactions and show animation
+      if (_termsAccepted && !_loadingSummary && mounted && ModalRoute.of(context)?.isCurrent == true) {
+        _fetchSummary();
+      }
+    }
   }
 
   @override
@@ -85,13 +196,15 @@ class _MrBucksScreenState extends State<MrBucksScreen> {
           ),
         ],
       ),
-      body: _checkingTermsStatus
-          ? const Center(
-              child: CircularProgressIndicator(
-                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF7E5EFD)),
-              ),
-            )
-          : SingleChildScrollView(
+      body: Stack(
+        children: [
+          _checkingTermsStatus
+              ? const Center(
+                  child: CircularProgressIndicator(
+                    valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF7E5EFD)),
+                  ),
+                )
+              : SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -119,17 +232,13 @@ class _MrBucksScreenState extends State<MrBucksScreen> {
             const SizedBox(height: 20),
             Container(
               decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFFFFD54F), Color(0xFFFFA726)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
+                gradient: _mrBucksGradient,
                 borderRadius: BorderRadius.circular(16),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.orange.withOpacity(0.3),
-                    blurRadius: 12,
-                    offset: const Offset(0, 6),
+                    color: const Color(0xFFFF7300).withOpacity(0.35),
+                    blurRadius: 18,
+                    offset: const Offset(0, 8),
                   ),
                 ],
               ),
@@ -143,6 +252,13 @@ class _MrBucksScreenState extends State<MrBucksScreen> {
                       color: Colors.white,
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
+                      shadows: [
+                        Shadow(
+                          color: Colors.black.withOpacity(0.25),
+                          offset: const Offset(0, 1),
+                          blurRadius: 4,
+                        ),
+                      ],
                     ),
                   ),
                   SizedBox(height: 10),
@@ -154,7 +270,12 @@ class _MrBucksScreenState extends State<MrBucksScreen> {
                     mainAxisAlignment: MainAxisAlignment.center,
                         crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                          const Text('🪙', style: TextStyle(fontSize: 40)),
+                          Image.asset(
+                            'assets/coin.png',
+                            width: 40,
+                            height: 40,
+                            fit: BoxFit.contain,
+                          ),
                           const SizedBox(width: 10),
                       _loadingSummary
                           ? const SizedBox(
@@ -167,12 +288,19 @@ class _MrBucksScreenState extends State<MrBucksScreen> {
                             )
                           : Text(
                               _formatPoints(_availablePoints),
-                              style: const TextStyle(
+                              style: TextStyle(
                                 color: Colors.white,
-                                    fontSize: 42,
-                                fontWeight: FontWeight.w800,
-                                    letterSpacing: 0.5,
-                                    height: 1,
+                                fontSize: 42,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.5,
+                                height: 1,
+                                shadows: [
+                                  Shadow(
+                                    color: Colors.black.withOpacity(0.35),
+                                    offset: const Offset(0, 3),
+                                    blurRadius: 8,
+                                  ),
+                                ],
                               ),
                             ),
                     ],
@@ -185,6 +313,13 @@ class _MrBucksScreenState extends State<MrBucksScreen> {
             const SizedBox(height: 16),
             // Recent activity removed per API scope; summary only.
             const SizedBox(height: 12),
+            _ReferEarnCallout(
+              onTap: _openReferEarn,
+              referralCode: _referralCode,
+              cardDescription: _referralCardDescription,
+              bannerHeadline: _referralBannerHeadline,
+            ),
+            const SizedBox(height: 16),
             _SectionHeader(
               title: 'Select Points to Redeem',
               trailing: IconButton(
@@ -214,7 +349,7 @@ class _MrBucksScreenState extends State<MrBucksScreen> {
                     width: (MediaQuery.of(context).size.width - 16 * 2 - 12) / 2,
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     decoration: BoxDecoration(
-                      color: Colors.white,
+                      color: Colors.grey.shade200,
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: borderColor, width: borderWidth),
                       boxShadow: [
@@ -337,85 +472,139 @@ class _MrBucksScreenState extends State<MrBucksScreen> {
               );
             }),
             const SizedBox(height: 16),
-            SizedBox(
-              height: 64,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF7E5EFD),
-                  shape: const StadiumBorder(),
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                  textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-                ),
-                onPressed: (_redemptionType == null || _selectedPartner == null) ? null : () {
-                  if (_selectedPoints == null) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Please select points to redeem')), 
-                    );
-                    return;
-                  }
-                  _openRedemptionDialog();
-                },
-                child: Text(_redemptionType == 'donation' ? 'Continue to Donate' : 'Continue to Redemption'),
-              ),
+            _GradientButton(
+              label: _redemptionType == 'donation' ? 'Continue to Donate' : 'Continue to Redemption',
+              onPressed: (_redemptionType == null || _selectedPartner == null)
+                  ? null
+                  : () {
+                      if (_selectedPoints == null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Please select points to redeem')),
+                        );
+                        return;
+                      }
+                      _openRedemptionDialog();
+                    },
+            ),
+            const SizedBox(height: 16),
+            _GradientButton(
+              label: 'Start Earning',
+              onPressed: () {
+                Navigator.of(context).pushNamedAndRemoveUntil('/dashboard', (route) => false);
+              },
             ),
             const SizedBox(height: 12),
             _SectionHeader(title: 'How to Earn MR Bucks'),
             const SizedBox(height: 8),
-            _EarnTile(
-              emoji: '📸',
-              title: 'Scan, Manual & Upload Receipt',
-              subtitle: 'Upload receipts through any method',
-              points: '+20 pts',
-              color: const Color(0xFF7E5EFD),
-            ),
-            _EarnTile(
-              emoji: '📧',
-              title: 'Email Receipt',
-              subtitle: 'Send to upload@ManageReceipt.com',
-              points: '+30 pts',
-              color: Colors.indigo,
-            ),
-            _EarnTile(
-              emoji: '⭐',
-              title: 'Preferred Vendor Receipts',
-              subtitle: '',
-              points: '+50 pts',
-              color: Colors.amber.shade800,
-            ),
-            _EarnTile(
-              emoji: '📁',
-              title: 'Document Wallet',
-              subtitle: 'Store important documents',
-              points: '+5 pts',
-              color: Colors.deepOrange,
-            ),
-            _EarnTile(
-              emoji: '📊',
-              title: 'Expense Reports',
-              subtitle: 'Create and submit expense reports',
-              points: '+10 pts',
-              color: Colors.blue,
-            ),
-            _EarnTile(
-              emoji: '📋',
-              title: 'Tax Reports Export',
-              subtitle: 'Export your tax reports',
-              points: '+10 pts',
-              color: Colors.teal,
-            ),
-            _EarnTile(
-              emoji: '📈',
-              title: 'Custom Reports Export',
-              subtitle: 'Export custom reports',
-              points: '+10 pts',
-              color: Colors.purple,
-            ),
+            _buildEarnRulesSection(),
             const SizedBox(height: 24),
           ],
         ),
       ),
+          if (_showCoinShower)
+            CoinShowerWidget(
+              onComplete: () {
+                setState(() {
+                  _showCoinShower = false;
+                });
+              },
+            ),
+        ],
+      ),
+      bottomNavigationBar: AppBottomNavBar(
+        currentRoute: 'mr_bucks',
+        userId: Provider.of<UserProvider>(context, listen: false).userId ?? '',
+        token: Provider.of<UserProvider>(context, listen: false).token ?? '',
+        onUploadTap: () {
+          final userProvider = Provider.of<UserProvider>(context, listen: false);
+          final userId = userProvider.userId ?? '';
+          final country = userProvider.country;
+          UploadSheet.show(
+            context,
+            country: country,
+            onAction: (action) async {
+              switch (action) {
+                case UploadAction.camera:
+                  await _handleUploadFromHere(context, userId, source: ImageSource.camera);
+                  break;
+                case UploadAction.gallery:
+                  await _handleUploadFromHere(context, userId, source: ImageSource.gallery);
+                  break;
+                case UploadAction.manual:
+                  await _openManualReceipt(context, userId);
+                  break;
+                case UploadAction.trackDistance:
+                  await _openTrackDistance(context, userId);
+                  break;
+              }
+            },
+          );
+        },
+      ),
     );
   }
+
+  Future<void> _handleUploadFromHere(BuildContext context, String userId, {required ImageSource source}) async {
+    final receiptProvider = Provider.of<ReceiptProvider>(context, listen: false);
+    receiptProvider.setUserId(userId);
+
+    final receiptData = await receiptProvider.uploadAndProcessReceipt(source);
+    if (receiptData == null) {
+      return;
+    }
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ReceiptDetailsScreen(
+          receipt: receiptData,
+          imageUrl: receiptData['decryptedImageUrl'] ?? receiptData['imageUrl'] ?? '',
+          userId: userId,
+          imageId: (receiptData['imageId']?.toString()) ?? '',
+          isNewReceipt: true,
+          isPdf: false,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openManualReceipt(BuildContext context, String userId) async {
+    final emptyReceipt = {
+      'merchant': '',
+      'receiptDate': DateTime.now().toIso8601String(),
+      'amount': '',
+      'category': '',
+    };
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ReceiptDetailsScreen(
+          receipt: emptyReceipt,
+          imageUrl: '',
+          userId: userId,
+          imageId: '',
+          isNewReceipt: true,
+          isPdf: false,
+          isManualReceipt: true,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openTrackDistance(BuildContext context, String userId) async {
+    final token = Provider.of<UserProvider>(context, listen: false).token ?? '';
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TrackDistanceScreen(
+          userId: userId,
+          token: token,
+        ),
+      ),
+    );
+  }
+
 }
 
 class _StatCard extends StatelessWidget {
@@ -550,6 +739,209 @@ class _EarnTile extends StatelessWidget {
   }
 }
 
+class _GradientButton extends StatelessWidget {
+  final String label;
+  final VoidCallback? onPressed;
+
+  const _GradientButton({
+    required this.label,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bool enabled = onPressed != null;
+    return SizedBox(
+      height: 52,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: enabled ? _mrBucksGradient : null,
+          color: enabled ? null : Colors.grey.shade300,
+          borderRadius: BorderRadius.circular(26),
+          boxShadow: enabled
+              ? [
+                  BoxShadow(
+                    color: const Color(0xFFFF7300).withOpacity(0.3),
+                    blurRadius: 16,
+                    offset: const Offset(0, 8),
+                  ),
+                ]
+              : null,
+        ),
+        child: ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.transparent,
+            shadowColor: Colors.transparent,
+            shape: const StadiumBorder(),
+            textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            foregroundColor: Colors.white,
+          ),
+          onPressed: onPressed,
+          child: Text(
+            label,
+            style: TextStyle(
+              color: enabled ? Colors.white : Colors.white70,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ReferEarnCallout extends StatelessWidget {
+  final VoidCallback onTap;
+  final String? referralCode;
+  final String cardDescription;
+  final String bannerHeadline;
+  
+  const _ReferEarnCallout({
+    required this.onTap,
+    this.referralCode,
+    required this.cardDescription,
+    required this.bannerHeadline,
+  });
+
+  Future<void> _copyReferralCode(BuildContext context) async {
+    if (referralCode == null || referralCode!.isEmpty) return;
+    
+    await Clipboard.setData(ClipboardData(text: referralCode!));
+    
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Referral code copied to clipboard!'),
+          duration: Duration(seconds: 2),
+          backgroundColor: Color(0xFF7E5EFD),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(28),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.04),
+              blurRadius: 20,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        child: Stack(
+          children: [
+            Positioned(
+              left: 0,
+              top: 18,
+              bottom: 18,
+              child: Container(
+                width: 8,
+                decoration: const BoxDecoration(
+                  gradient: _mrBucksGradient,
+                  borderRadius: BorderRadius.only(
+                    topRight: Radius.circular(8),
+                    bottomRight: Radius.circular(8),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+              child: Row(
+                children: [
+                  Container(
+                    width: 56,
+                    height: 56,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFFFFF3E0),
+                      shape: BoxShape.circle,
+                    ),
+                    alignment: Alignment.center,
+                    child: const Icon(Icons.group, color: Color(0xFFFF7300), size: 26),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (bannerHeadline.isNotEmpty)
+                          Text(
+                            bannerHeadline,
+                            style: const TextStyle(
+                              color: Colors.black54,
+                            ),
+                          ),
+                        if (bannerHeadline.isNotEmpty && cardDescription.isNotEmpty)
+                          const SizedBox(height: 4),
+                        if (cardDescription.isNotEmpty)
+                          Text(
+                            cardDescription,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        // Display referral code if available
+                        if (referralCode != null && referralCode!.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          GestureDetector(
+                            onTap: () => _copyReferralCode(context),
+                            behavior: HitTestBehavior.opaque,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF5F3FF),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: const Color(0xFF7E5EFD).withOpacity(0.3),
+                                  width: 1,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    referralCode!,
+                                    style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFF7E5EFD),
+                                      fontFamily: 'monospace',
+                                      letterSpacing: 1.2,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  const Icon(
+                                    Icons.copy,
+                                    size: 16,
+                                    color: Color(0xFF7E5EFD),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // Simple partners grid with selection highlight
 class _PartnersGrid extends StatelessWidget {
   final String selected;
@@ -558,6 +950,15 @@ class _PartnersGrid extends StatelessWidget {
 
   const _PartnersGrid({required this.selected, required this.onSelected, required this.partners});
 
+  String _formatPartnerName(String name) {
+    // Fix specific names
+    if (name.toUpperCase() == 'DONATEKART') {
+      return 'Donatekart';
+    }
+    // Return as-is for other names
+    return name;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Wrap(
@@ -565,6 +966,7 @@ class _PartnersGrid extends StatelessWidget {
       runSpacing: 14,
       children: partners.map((partner) {
         final String partnerName = partner['name'] ?? '';
+        final String formattedName = _formatPartnerName(partnerName);
         final String logoUrl = partner['logo'] ?? '';
         final bool isSel = partnerName == selected;
         
@@ -572,7 +974,7 @@ class _PartnersGrid extends StatelessWidget {
           onTap: () => onSelected(partnerName),
           child: Container(
             width: (MediaQuery.of(context).size.width - 16 * 2 - 14 * 2) / 3,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(14),
@@ -587,21 +989,35 @@ class _PartnersGrid extends StatelessWidget {
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Container(
-                  height: 72,
+                SizedBox(
+                  height: 68,
                   width: double.infinity,
-                  padding: const EdgeInsets.all(8),
-                  child: logoUrl.isNotEmpty
-                      ? _NetworkPartnerLogo(url: logoUrl, fit: BoxFit.contain)
-                      : Icon(
-                          Icons.image_not_supported,
-                          color: Colors.grey.shade400,
-                          size: 32,
-                        ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: logoUrl.isNotEmpty
+                        ? _NetworkPartnerLogo(url: logoUrl, fit: BoxFit.contain)
+                        : Icon(
+                            Icons.image_not_supported,
+                            color: Colors.grey.shade400,
+                            size: 32,
+                          ),
+                  ),
                 ),
-                const SizedBox(height: 8),
-                Text(partnerName, textAlign: TextAlign.center, style: const TextStyle(fontSize: 13), maxLines: 2, overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 6),
+                SizedBox(
+                  height: 36,
+                  child: Center(
+                    child: Text(
+                      formattedName,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 13),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -734,6 +1150,116 @@ extension on _MrBucksScreenState {
     }
   }
 
+  Future<void> _fetchEarnRules() async {
+    try {
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      final token = userProvider.token;
+
+      setState(() {
+        _loadingEarnRules = true;
+        _earnRulesError = null;
+      });
+
+      final response = await RewardsService.getEarnRules(token: token);
+
+      if (!mounted) return;
+
+      if (response != null && response['success'] == true) {
+        // Parse the response structure: { success: true, data: [...] }
+        final data = response['data'];
+        List<dynamic> rulesList = [];
+        
+        if (data is List) {
+          rulesList = data;
+        } else if (data is Map) {
+          rulesList = data['earnRules'] ?? data['rules'] ?? [];
+        }
+
+        // Filter only active rules and sort by priority (higher priority first)
+        final earnRulesList = rulesList
+            .where((rule) {
+              final ruleMap = rule as Map<String, dynamic>;
+              return ruleMap['isActive'] == true;
+            })
+            .map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e as Map))
+            .toList()
+          ..sort((a, b) {
+            final priorityA = a['priority'] as int? ?? 0;
+            final priorityB = b['priority'] as int? ?? 0;
+            return priorityB.compareTo(priorityA); // Higher priority first
+          });
+
+        setState(() {
+          _earnRules = earnRulesList;
+          _loadingEarnRules = false;
+        });
+      } else {
+        setState(() {
+          _loadingEarnRules = false;
+          _earnRulesError = 'Failed to load earn rules';
+        });
+      }
+    } catch (e) {
+      debugPrint('Error fetching earn rules: $e');
+      if (!mounted) return;
+      setState(() {
+        _loadingEarnRules = false;
+        _earnRulesError = 'Error loading earn rules';
+      });
+    }
+  }
+
+  Future<void> _loadReferralCopy() async {
+    try {
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      final token = userProvider.token;
+      final userId = userProvider.userId;
+
+      if (token == null || token.isEmpty) return;
+
+      setState(() {
+        _loadingReferralCopy = true;
+      });
+
+      // Fetch referral copy with userId to get referral code
+      final response = await ReferralService.getReferralCopy(
+        token,
+        userId: userId,
+      );
+
+      if (!mounted) return;
+
+      if (response != null && response['success'] == true) {
+        final data = response['data'] as Map<String, dynamic>? ?? {};
+        final referrer = data['referrer'] as Map<String, dynamic>? ?? {};
+
+        setState(() {
+          // Update text content from API
+          _referralBannerHeadline = referrer['bannerHeadline'] as String? ?? '';
+          _referralCardDescription = referrer['cardDescription'] as String? ?? '';
+          
+          // Get referral code if available
+          final referralCodeFromApi = referrer['referralCode'] as String?;
+          if (referralCodeFromApi != null && referralCodeFromApi.isNotEmpty) {
+            _referralCode = referralCodeFromApi.toUpperCase();
+          }
+          
+          _loadingReferralCopy = false;
+        });
+      } else {
+        setState(() {
+          _loadingReferralCopy = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading referral copy: $e');
+      if (!mounted) return;
+      setState(() {
+        _loadingReferralCopy = false;
+      });
+    }
+  }
+
   Future<void> _fetchSummary() async {
     try {
       final userProvider = Provider.of<UserProvider>(context, listen: false);
@@ -762,11 +1288,65 @@ extension on _MrBucksScreenState {
         final txList = tx.map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e as Map)).toList();
 
         if (!mounted) return;
+        
+        // Check for new AWARD transactions (points earned)
+        // Transactions are sorted by createdAt (most recent first)
+        bool pointsEarned = false;
+        String? newAwardTransactionId;
+        
+        if (txList.isNotEmpty) {
+          // Get the most recent transaction
+          final mostRecentTx = txList.first;
+          final txId = mostRecentTx['id'] as String?;
+          final entryType = mostRecentTx['entryType'] as String?;
+          final points = (mostRecentTx['points'] ?? 0) is int
+              ? mostRecentTx['points'] as int
+              : int.tryParse('${mostRecentTx['points'] ?? '0'}') ?? 0;
+          
+          // Check if this is a new AWARD transaction we haven't seen before
+          if (txId != null && 
+              txId.isNotEmpty && 
+              entryType == 'AWARD' && 
+              points > 0 &&
+              txId != _lastSeenTransactionId) {
+            // This is a new award transaction!
+            pointsEarned = true;
+            newAwardTransactionId = txId;
+          }
+          
+          // Update last seen transaction ID to the most recent one (even if not an award)
+          // This ensures we don't show animation for old transactions
+          if (txId != null && txId.isNotEmpty && txId != _lastSeenTransactionId) {
+            _saveLastSeenTransactionId(txId);
+          }
+        }
+        
+        // Also check if balance increased as a fallback (in case transaction tracking fails)
+        final int? oldBalance = _previousBalance;
+        final bool balanceIncreased = oldBalance != null && fetchedBalance > oldBalance;
+        
+        // Show coin shower if we detected a new award OR balance increased significantly
+        // (Use balance as fallback, but prefer transaction-based detection)
+        final bool shouldShowAnimation = pointsEarned || (balanceIncreased && _lastSeenTransactionId == null);
+        
         setState(() {
           _balance = fetchedBalance;
           // Optional: show recent activity again from summary
           _summaryTransactions = txList;
           _loadingSummary = false;
+          
+          // Update previous balance
+          if (oldBalance == null) {
+            // First load - set previous balance without triggering animation
+            _previousBalance = fetchedBalance;
+          } else {
+            _previousBalance = fetchedBalance;
+          }
+          
+          // Trigger coin shower if points were earned
+          if (shouldShowAnimation) {
+            _showCoinShower = true;
+          }
         });
       } else {
         if (!mounted) return;
@@ -893,6 +1473,7 @@ extension on _MrBucksScreenState {
           _fetchSummary();
           _fetchCatalog();
           _fetchRedemptionHistory();
+          _fetchEarnRules();
         }
       } else {
         setState(() => _checkingTermsStatus = false);
@@ -1364,12 +1945,17 @@ extension on _MrBucksScreenState {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
+            final bool isEmpty = (_selectedHistoryTab == 0 && _summaryTransactions.isEmpty) ||
+                (_selectedHistoryTab == 1 && _redemptionHistory.isEmpty && !_loadingRedemptionHistory);
+            
             return Dialog(
               insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               child: Container(
                 constraints: BoxConstraints(
-                  maxHeight: MediaQuery.of(context).size.height * 0.7,
+                  maxHeight: isEmpty 
+                      ? MediaQuery.of(context).size.height * 0.4
+                      : MediaQuery.of(context).size.height * 0.7,
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -1491,29 +2077,229 @@ extension on _MrBucksScreenState {
     );
   }
 
+  Widget _buildEarnRulesSection() {
+    if (_loadingEarnRules) {
+      return const Padding(
+        padding: EdgeInsets.all(20),
+        child: Center(
+          child: CircularProgressIndicator(
+            valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF7E5EFD)),
+          ),
+        ),
+      );
+    }
+
+    if (_earnRulesError != null) {
+      return Padding(
+        padding: const EdgeInsets.all(20),
+        child: Center(
+          child: Column(
+            children: [
+              const Icon(Icons.error_outline, color: Colors.grey, size: 48),
+              const SizedBox(height: 12),
+              Text(
+                _earnRulesError!,
+                style: const TextStyle(color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              TextButton(
+                onPressed: _fetchEarnRules,
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_earnRules.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(20),
+        child: Center(
+          child: Text(
+            'No earn rules available',
+            style: TextStyle(color: Colors.grey),
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      children: _earnRules.map((rule) {
+        return _buildEarnTileFromRule(rule);
+      }).toList(),
+    );
+  }
+
+  Widget _buildEarnTileFromRule(Map<String, dynamic> rule) {
+    // Extract data from API response structure
+    final name = rule['name'] ?? '';
+    final description = rule['description'] ?? '';
+    final pointsObj = rule['points'] as Map<String, dynamic>?;
+    final pointsMin = pointsObj?['min'] ?? 0;
+    final pointsMax = pointsObj?['max'] ?? 0;
+    final ruleType = rule['ruleType'] as String? ?? '';
+    final metadata = rule['metadata'] as Map<String, dynamic>?;
+    
+    // Format points - use min if min == max, otherwise show range
+    String pointsText;
+    if (pointsMin == pointsMax) {
+      pointsText = '+$pointsMin pts';
+    } else {
+      pointsText = '+$pointsMin-$pointsMax pts';
+    }
+
+    // Get emoji/icon based on rule type and name
+    String? emoji;
+    IconData? icon;
+    Color color;
+    
+    // Map rule types and names to appropriate icons/colors
+    final nameLower = name.toLowerCase();
+    if (nameLower.contains('preferred vendor') || nameLower.contains('vendor')) {
+      emoji = '⭐';
+      color = Colors.amber.shade800;
+    } else if (nameLower.contains('email')) {
+      emoji = '📧';
+      color = Colors.indigo;
+    } else if (nameLower.contains('refer') || nameLower.contains('referral')) {
+      emoji = '👥';
+      color = Colors.pink;
+    } else if (nameLower.contains('scan') || nameLower.contains('manual') || nameLower.contains('upload receipt')) {
+      emoji = '📸';
+      color = const Color(0xFF7E5EFD);
+    } else if (nameLower.contains('document wallet') || nameLower.contains('doc wallet')) {
+      emoji = '📁';
+      color = Colors.deepOrange;
+    } else if (nameLower.contains('expense report')) {
+      emoji = '📊';
+      color = Colors.blue;
+    } else if (nameLower.contains('tax report')) {
+      emoji = '📋';
+      color = Colors.teal;
+    } else if (nameLower.contains('custom report')) {
+      emoji = '📈';
+      color = Colors.purple;
+    } else if (nameLower.contains('terms')) {
+      emoji = '✅';
+      color = Colors.green;
+    } else {
+      // Default fallback
+      icon = Icons.stars;
+      color = const Color(0xFF7E5EFD);
+    }
+
+    return _EarnTile(
+      emoji: emoji,
+      icon: icon,
+      title: name,
+      subtitle: description,
+      points: pointsText,
+      color: color,
+    );
+  }
+
+  Color _parseColorFromHex(String hexString) {
+    try {
+      // Remove # if present
+      String hex = hexString.replaceAll('#', '');
+      
+      // Handle 3-digit hex
+      if (hex.length == 3) {
+        hex = hex.split('').map((c) => '$c$c').join();
+      }
+      
+      // Add alpha if missing
+      if (hex.length == 6) {
+        hex = 'FF$hex';
+      }
+      
+      return Color(int.parse(hex, radix: 16));
+    } catch (e) {
+      debugPrint('Error parsing color: $hexString, $e');
+      return const Color(0xFF7E5EFD); // Default purple
+    }
+  }
+
+  IconData? _getIconFromName(String iconName) {
+    // Map common icon names to Flutter icons
+    final iconMap = {
+      'camera': Icons.camera_alt,
+      'email': Icons.email,
+      'star': Icons.star,
+      'folder': Icons.folder,
+      'chart': Icons.bar_chart,
+      'file': Icons.description,
+      'trending': Icons.trending_up,
+      'people': Icons.people,
+      'receipt': Icons.receipt,
+      'upload': Icons.cloud_upload,
+      'wallet': Icons.account_balance_wallet,
+      'report': Icons.assessment,
+      'export': Icons.file_download,
+    };
+    
+    return iconMap[iconName.toLowerCase()];
+  }
+
+  void _openReferEarn() {
+    try {
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      final userId = userProvider.userId ?? '';
+      final token = userProvider.token ?? '';
+      if (userId.isEmpty || token.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Sign in to access Refer & Earn.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ReferEarnScreen(userId: userId, token: token),
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Unable to open Refer & Earn right now.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   Widget _buildPointsHistoryContent() {
     // Use already loaded summary transactions - no need to fetch again
     if (_summaryTransactions.isEmpty) {
       return Container(
-        padding: const EdgeInsets.all(32),
+        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
+        constraints: const BoxConstraints(
+          minHeight: 150,
+          maxHeight: 200,
+        ),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
           children: const [
-            Icon(Icons.account_balance_wallet_outlined, size: 64, color: Colors.grey),
-            SizedBox(height: 16),
+            Icon(Icons.account_balance_wallet_outlined, size: 48, color: Colors.grey),
+            SizedBox(height: 12),
             Text(
               'No points history yet',
               style: TextStyle(
-                fontSize: 18,
+                fontSize: 16,
                 fontWeight: FontWeight.w600,
                 color: Colors.black54,
               ),
             ),
-            SizedBox(height: 8),
+            SizedBox(height: 6),
             Text(
               'Start earning points to see your history here!',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.black38),
+              style: TextStyle(fontSize: 13, color: Colors.black38),
             ),
           ],
         ),
@@ -1532,9 +2318,12 @@ extension on _MrBucksScreenState {
 
   Widget _buildRedemptionHistoryContent() {
     if (_loadingRedemptionHistory) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24.0),
+      return Container(
+        constraints: const BoxConstraints(
+          minHeight: 150,
+          maxHeight: 200,
+        ),
+        child: const Center(
           child: CircularProgressIndicator(),
         ),
       );
@@ -1542,25 +2331,30 @@ extension on _MrBucksScreenState {
 
     if (_redemptionHistory.isEmpty) {
       return Container(
-        padding: const EdgeInsets.all(32),
+        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
+        constraints: const BoxConstraints(
+          minHeight: 150,
+          maxHeight: 200,
+        ),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
           children: const [
-            Icon(Icons.receipt_long, size: 64, color: Colors.grey),
-            SizedBox(height: 16),
+            Icon(Icons.receipt_long, size: 48, color: Colors.grey),
+            SizedBox(height: 12),
             Text(
               'No redemption history yet',
               style: TextStyle(
-                fontSize: 18,
+                fontSize: 16,
                 fontWeight: FontWeight.w600,
                 color: Colors.black54,
               ),
             ),
-            SizedBox(height: 8),
+            SizedBox(height: 6),
             Text(
               'Start redeeming your points to see your history here!',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.black38),
+              style: TextStyle(fontSize: 13, color: Colors.black38),
             ),
           ],
         ),
@@ -2164,7 +2958,8 @@ class _PointsHistoryTile extends StatelessWidget {
   String _formatDate(String dateStr) {
     try {
       final date = DateTime.parse(dateStr);
-      return '${date.day}/${date.month}/${date.year}';
+      // US format: MM/DD/YYYY
+      return '${date.month}/${date.day}/${date.year}';
     } catch (_) {
       return dateStr;
     }
@@ -2251,6 +3046,7 @@ class _PointsHistoryTile extends StatelessWidget {
               ],
             ),
           ),
+          const SizedBox(width: 12),
           // Points
           Text(
             points >= 0 ? '+$points' : '$points',
@@ -2318,7 +3114,8 @@ class _RedemptionHistoryTile extends StatelessWidget {
   String _formatDate(String dateStr) {
     try {
       final date = DateTime.parse(dateStr);
-      return '${date.day}/${date.month}/${date.year}';
+      // US format: MM/DD/YYYY
+      return '${date.month}/${date.day}/${date.year}';
     } catch (_) {
       return dateStr;
     }
@@ -2505,6 +3302,187 @@ class _RedemptionHistoryTile extends StatelessWidget {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+/// Coin Shower Animation Widget
+/// Displays animated coins falling from the top of the screen
+class CoinShowerWidget extends StatefulWidget {
+  final VoidCallback onComplete;
+
+  const CoinShowerWidget({
+    super.key,
+    required this.onComplete,
+  });
+
+  @override
+  State<CoinShowerWidget> createState() => _CoinShowerWidgetState();
+}
+
+class _CoinShowerWidgetState extends State<CoinShowerWidget>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  final List<_CoinAnimation> _coins = [];
+  final Random _random = Random();
+  // Slightly fewer coins & shorter duration for smoother performance
+  static const int _coinCount = 20;
+  static const Duration _animationDuration = Duration(milliseconds: 2200);
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: _animationDuration,
+      vsync: this,
+    )..addStatusListener((status) {
+        if (status == AnimationStatus.completed) {
+          widget.onComplete();
+        }
+      });
+
+    // Initialize coins with random positions and movement characteristics
+    for (int i = 0; i < _coinCount; i++) {
+      _coins.add(_CoinAnimation(
+        startX: _random.nextDouble(),
+        delay: _random.nextDouble() * 0.3, // keep small variance to stagger coins
+        fallSpeed: 0.7 + _random.nextDouble() * 0.6,
+        rotationSpeed: 2 + _random.nextDouble() * 4,
+        horizontalDrift: -0.25 + _random.nextDouble() * 0.5,
+      ));
+    }
+
+    // Start animation immediately to align with balance update
+    _controller.forward();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+
+    return IgnorePointer(
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (_, __) {
+          final progress = _controller.value;
+          return Stack(
+            children: _coins.map((coin) {
+              final adjustedProgress =
+                  ((progress - coin.delay) / (1 - coin.delay)).clamp(0.0, 1.0);
+
+              if (adjustedProgress <= 0 || adjustedProgress >= 1.0) {
+                return const SizedBox.shrink();
+              }
+
+              // Position calculations
+              final x = (coin.startX +
+                      coin.horizontalDrift * adjustedProgress) *
+                  size.width;
+              final y = adjustedProgress *
+                  coin.fallSpeed *
+                  size.height *
+                  1.1; // little overshoot past screen bottom
+
+              // Rotation & scaling
+              final rotation =
+                  adjustedProgress * coin.rotationSpeed * 2 * pi;
+              final scale = 0.6 +
+                  (adjustedProgress < 0.3
+                      ? adjustedProgress / 0.3 * 0.4
+                      : 0.4 +
+                          (adjustedProgress - 0.3) / 0.7 * 0.2);
+
+              // Opacity fade in/out
+              final opacity = adjustedProgress < 0.1
+                  ? adjustedProgress / 0.1
+                  : adjustedProgress > 0.85
+                      ? (1 - adjustedProgress) / 0.15
+                      : 1.0;
+
+              return Positioned(
+                left: x - 20,
+                top: y - 20,
+                child: Transform.rotate(
+                  angle: rotation,
+                  child: Transform.scale(
+                    scale: scale,
+                    child: Opacity(
+                      opacity: opacity,
+                      // Lightweight reward coin icon optimized for animation
+                      child: const _RewardCoinIcon(size: 40),
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _CoinAnimation {
+  final double startX;
+  final double delay;
+  final double fallSpeed;
+  final double rotationSpeed;
+  final double horizontalDrift;
+
+  _CoinAnimation({
+    required this.startX,
+    required this.delay,
+    required this.fallSpeed,
+    required this.rotationSpeed,
+    required this.horizontalDrift,
+  });
+}
+
+class _RewardCoinIcon extends StatelessWidget {
+  final double size;
+
+  const _RewardCoinIcon({required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    final double innerSize = size * 0.76;
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFFE082), Color(0xFFFFB300)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        // No shadow here to keep the animation lightweight
+      ),
+      child: Center(
+        child: Container(
+          width: innerSize,
+          height: innerSize,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const LinearGradient(
+              colors: [Color(0xFFFFF8E1), Color(0xFFFFD54F)],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+            ),
+          ),
+          child: Icon(
+            Icons.workspace_premium,
+            color: Colors.orange.shade700,
+            size: innerSize * 0.6,
+          ),
+        ),
       ),
     );
   }

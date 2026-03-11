@@ -25,17 +25,30 @@ class _ReferEarnScreenState extends State<ReferEarnScreen> {
   bool _applied = false;
   bool _isLoading = true;
   bool _isApplying = false;
+  bool _loadingCopy = true;
   
   String _referralCode = '';
   String _referralLink = '';
   int _friendsReferred = 0;
   int _pointsEarned = 0;
   List<dynamic> _inviteHistory = [];
+  
+  // Referral copy text from API
+  Map<String, dynamic>? _referralCopy;
+  String _referrerBannerHeadline = '';
+  String _referrerCardDescription = '';
+  String _referrerBannerSubheadline = '';
+  String _refereeSectionTitle = '';
+  String _refereeInstructions = '';
+  String _refereePlaceholder = '';
+  String _refereeButtonText = '';
+  List<Map<String, dynamic>> _howItWorksSteps = [];
 
   @override
   void initState() {
     super.initState();
     _loadReferralData();
+    _loadReferralCopy();
   }
 
   /// Generate platform-specific referral link
@@ -55,6 +68,74 @@ class _ReferEarnScreenState extends State<ReferEarnScreen> {
     }
   }
 
+  Future<void> _loadReferralCopy() async {
+    setState(() => _loadingCopy = true);
+    
+    // Pass userId to get referral code in the response
+    final response = await ReferralService.getReferralCopy(
+      widget.token,
+      userId: widget.userId,
+    );
+    
+    if (response != null && mounted) {
+      setState(() {
+        _referralCopy = response;
+        
+        // Parse response structure: { success: true, data: { referrer: {...}, referee: {...} } }
+        final data = response['data'] as Map<String, dynamic>? ?? {};
+        
+        // Parse referrer text (for the person referring)
+        final referrer = data['referrer'] as Map<String, dynamic>? ?? {};
+        _referrerBannerHeadline = referrer['bannerHeadline'] as String? ?? '';
+        _referrerCardDescription = referrer['cardDescription'] as String? ?? '';
+        _referrerBannerSubheadline = referrer['bannerSubheadline'] as String? ?? '';
+        
+        // Get referral code from API response if available
+        final referralCodeFromApi = referrer['referralCode'] as String?;
+        if (referralCodeFromApi != null && referralCodeFromApi.isNotEmpty) {
+          _referralCode = referralCodeFromApi.toUpperCase();
+        }
+        
+        // Parse referee text (for the person being referred)
+        final referee = data['referee'] as Map<String, dynamic>? ?? {};
+        _refereeSectionTitle = referee['sectionTitle'] as String? ?? '';
+        _refereeInstructions = referee['instructions'] as String? ?? '';
+        _refereePlaceholder = referee['placeholder'] as String? ?? '';
+        _refereeButtonText = referee['buttonText'] as String? ?? '';
+        
+        // Parse "How It Works" steps if provided
+        final steps = data['howItWorks'] ?? response['howItWorks'] ?? [];
+        if (steps is List && steps.isNotEmpty) {
+          _howItWorksSteps = steps.map<Map<String, dynamic>>((step) {
+            if (step is Map) {
+              return Map<String, dynamic>.from(step);
+            }
+            return {};
+          }).toList();
+        } else {
+          // Keep default steps if not provided
+          _howItWorksSteps = [
+            {'step': '1', 'title': 'Share Your Code', 'subtitle': 'Share your referral code or link with others.'},
+            {'step': '2', 'title': 'User Signs Up', 'subtitle': 'The user downloads the app and enters your code in the Refer & Earn section.'},
+            {'step': '3', 'title': 'User Uploads Receipt', 'subtitle': 'The user uploads their first receipt.'},
+            {'step': '4', 'title': 'You Get Rewarded', 'subtitle': 'You receive points when the signup process is completed.'},
+            {'step': '5', 'title': 'User Gets Bonus', 'subtitle': 'The user also earns bonus points for using your code.'},
+          ];
+        }
+        
+        // Update referral link if we got a code from the API
+        if (_referralCode.isNotEmpty) {
+          _referralLink = _generateReferralLink(_referralCode);
+        }
+        
+        _loadingCopy = false;
+      });
+    } else if (mounted) {
+      setState(() => _loadingCopy = false);
+      // Default values are already set in initState
+    }
+  }
+
   Future<void> _loadReferralData() async {
     setState(() => _isLoading = true);
     
@@ -69,11 +150,19 @@ class _ReferEarnScreenState extends State<ReferEarnScreen> {
       
       if (data != null) {
         final stats = data['stats'] as Map<String, dynamic>? ?? {};
-        final referralCode = data['referralCode'] as String? ?? '';
+        final referralCodeFromDashboard = data['referralCode'] as String? ?? '';
         
         setState(() {
-          _referralCode = referralCode;
-          _referralLink = _generateReferralLink(referralCode);
+          // Only use referral code from dashboard if we don't have one from copy API
+          // The copy API is the source of truth for referral code when userId is provided
+          if (_referralCode.isEmpty && referralCodeFromDashboard.isNotEmpty) {
+            _referralCode = referralCodeFromDashboard;
+            _referralLink = _generateReferralLink(referralCodeFromDashboard);
+          } else if (_referralCode.isNotEmpty) {
+            // Ensure referral link is updated if we have a code
+            _referralLink = _generateReferralLink(_referralCode);
+          }
+          
           _friendsReferred = stats['friendsReferred'] as int? ?? 0;
           _pointsEarned = stats['pointsEarned'] as int? ?? 0;
           _inviteHistory = data['history'] as List<dynamic>? ?? [];
@@ -175,20 +264,28 @@ class _ReferEarnScreenState extends State<ReferEarnScreen> {
           ),
         ],
       ),
-      body: _isLoading
+      body: (_isLoading || _loadingCopy)
           ? const Center(child: CircularProgressIndicator(color: Color(0xFF7E5EFD)))
           : SingleChildScrollView(
               padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _HeaderCard(),
+                  _HeaderCard(
+                    title: _referrerBannerHeadline,
+                    subtitle: '',
+                    description: _referrerBannerSubheadline,
+                  ),
                   const SizedBox(height: 16),
                   _ApplyCodeCard(
                     controller: _applyCodeController,
                     onApply: _applyReferralCode,
                     applied: _applied,
                     isApplying: _isApplying,
+                    title: _refereeSectionTitle,
+                    subtitle: _refereeInstructions,
+                    placeholder: _refereePlaceholder,
+                    buttonText: _refereeButtonText,
                   ),
                   const SizedBox(height: 16),
                   _ReferralCodeCard(
@@ -235,78 +332,110 @@ class _ReferEarnScreenState extends State<ReferEarnScreen> {
                   const SizedBox(height: 16),
                   Row(
                     children: [
-                      Expanded(child: _SummaryStat(label: 'Friends Referred', value: _friendsReferred.toString())),
+                      Expanded(child: _SummaryStat(label: 'Referral Count', value: _friendsReferred.toString())),
                       const SizedBox(width: 12),
                       Expanded(child: _SummaryStat(label: 'Points Earned', value: _pointsEarned.toString())),
                     ],
                   ),
-            const SizedBox(height: 24),
-            const Text(
-              'How It Works',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                  if (_howItWorksSteps.isNotEmpty) ...[
+                    const SizedBox(height: 24),
+                    const Text(
+                      'How It Works',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 8),
+                    ..._howItWorksSteps.map((step) => _StepTile(
+                      step: step['step']?.toString() ?? '',
+                      title: step['title'] ?? '',
+                      subtitle: step['subtitle'] ?? step['description'] ?? '',
+                    )),
+                    const SizedBox(height: 24),
+                  ],
+                ],
+              ),
             ),
-            const SizedBox(height: 8),
-            const _StepTile(step: '1', title: 'Share Your Code', subtitle: 'Share your referral code or link with friends'),
-            const _StepTile(step: '2', title: 'Friend Signs Up', subtitle: 'Your friend downloads the app and enters your code in Refer & Earn section'),
-            const _StepTile(step: '3', title: 'Friend Uploads Receipt', subtitle: 'Your friend uploads their first receipt'),
-            const _StepTile(step: '4', title: 'You Get Rewarded', subtitle: 'You receive 100 points when they complete signup'),
-            const _StepTile(step: '5', title: 'Friend Gets Bonus', subtitle: 'Your friend gets 50 bonus points for using your code'),
-            const SizedBox(height: 24),
-          ],
-        ),
-      ),
     );
   }
 }
 
 class _HeaderCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final String description;
+  
+  const _HeaderCard({
+    required this.title,
+    required this.subtitle,
+    required this.description,
+  });
+
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [Color(0xFFFFD54F), Color(0xFFFFA726)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
+          colors: [Color(0xFFFF9500), Color(0xFFFF7300)],
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
         ),
         borderRadius: BorderRadius.circular(20),
         boxShadow: [
-          BoxShadow(color: const Color(0xFF7E5EFD).withOpacity(0.3), blurRadius: 16, offset: const Offset(0, 8)),
+          BoxShadow(
+            color: const Color(0xFFFF7300).withOpacity(0.35),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
         ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          const Text(
-            'Refer & Earn',
-            style: TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Invite your friends and earn amazing rewards!',
-            style: TextStyle(color: Colors.white70),
+          Text(
+            title,
             textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800),
           ),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.18),
-              borderRadius: BorderRadius.circular(16),
+          if (subtitle.isNotEmpty && subtitle != title) ...[
+            const SizedBox(height: 8),
+            Text(
+              subtitle,
+              style: const TextStyle(color: Colors.white),
+              textAlign: TextAlign.center,
             ),
-            child: Row(
-              children: const [
-                Text('🎁  ', style: TextStyle(fontSize: 18)),
-                Expanded(
-                  child: Text(
-                    'Get 100 Points Per Friend\nYour friend also gets 50 points when they sign up',
-                    style: TextStyle(color: Colors.white, height: 1.3),
+          ],
+          if (description.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.18),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: const Center(
+                      child: Text('👥', style: TextStyle(fontSize: 18)),
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      description,
+                      style: const TextStyle(color: Colors.white, height: 1.3),
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -433,10 +562,19 @@ class _ApplyCodeCard extends StatelessWidget {
   final VoidCallback onApply;
   final bool applied;
   final bool isApplying;
+  final String title;
+  final String subtitle;
+  final String placeholder;
+  final String buttonText;
+  
   const _ApplyCodeCard({
     required this.controller,
     required this.onApply,
     required this.applied,
+    required this.title,
+    required this.subtitle,
+    required this.placeholder,
+    required this.buttonText,
     this.isApplying = false,
   });
 
@@ -452,16 +590,16 @@ class _ApplyCodeCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Have a Referral Code?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
-          const Text('Enter a friend\'s referral code to get bonus points', style: TextStyle(color: Colors.black54)),
+          Text(subtitle, style: const TextStyle(color: Colors.black54)),
           const SizedBox(height: 12),
           TextField(
             controller: controller,
             enabled: !applied && !isApplying,
             textCapitalization: TextCapitalization.characters,
             decoration: InputDecoration(
-              hintText: 'Enter code',
+              hintText: placeholder,
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
             ),
           ),
@@ -483,7 +621,7 @@ class _ApplyCodeCard extends StatelessWidget {
                         strokeWidth: 2,
                       ),
                     )
-                  : Text(applied ? 'Code Applied ✓' : 'Apply Code'),
+                  : Text(applied ? 'Code Applied ✓' : buttonText),
             ),
           ),
         ],
@@ -528,7 +666,12 @@ class _StepTile extends StatelessWidget {
   final String step;
   final String title;
   final String subtitle;
-  const _StepTile({required this.step, required this.title, required this.subtitle});
+  
+  const _StepTile({
+    required this.step,
+    required this.title,
+    required this.subtitle,
+  });
 
   @override
   Widget build(BuildContext context) {

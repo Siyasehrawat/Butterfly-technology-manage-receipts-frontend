@@ -26,6 +26,7 @@ class FeatureFlagsProvider with ChangeNotifier {
   bool get isExpenseReportsEnabled => _featureFlags.expenseReportsEnabled;
   bool get isCustomReportsEnabled => _featureFlags.customReportsEnabled;
   bool get isEmailReceiptsEnabled => _featureFlags.emailReceiptsEnabled;
+  bool get isMrBucksEnabled => _featureFlags.mrBucksEnabled;
 
   // Cache keys
   static const String _cacheKey = 'feature_flags_cache';

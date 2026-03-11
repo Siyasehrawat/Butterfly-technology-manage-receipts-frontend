@@ -2,7 +2,8 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:async';
-import 'package:flutter/material.dart';
+import 'dart:math';
+import 'package:flutter/material.dart' hide Banner;
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -19,6 +20,9 @@ import '../services/auth_service.dart';
 import '../services/api_service_bypass.dart';
 import '../widgets/app_drawer.dart';
 import '../widgets/app_logo.dart';
+import '../widgets/duplicate_receipt_badge.dart';
+import '../utils/country_utils.dart';
+import '../widgets/upload_bottom_sheet.dart';
 import 'receipt_details_screen.dart';
 import 'welcome_screen.dart';
 import 'reports_screen.dart';
@@ -35,11 +39,20 @@ import '../services/share_intent_service.dart';
 import '../services/share_intent_handler.dart';
 import '../services/receipts_service.dart';
 import '../models/receipt_models.dart';
+import '../models/receipt_save_result.dart';
 import '../services/auth_manager.dart';
 import 'package:flutter/services.dart';
 import '../utils/encryption_helper.dart';
 import '../utils/category_icons.dart';
 import 'package:flutter/scheduler.dart';
+import 'refer_earn_screen.dart';
+import '../services/banner_service.dart';
+import '../models/banner_model.dart';
+import '../widgets/banner_carousel.dart';
+import '../web/app/web_dashboard.dart';
+import '../widgets/app_bottom_nav_bar.dart';
+import '../services/document_scan_service.dart';
+import 'track_distance_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final String userId;
@@ -55,7 +68,7 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObserver {
+class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObserver, TickerProviderStateMixin {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   List<dynamic> savedReceipts = [];
   bool _isLoading = true;
@@ -76,6 +89,18 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     'Processing complete!'
   ];
   Timer? _progressTimer;
+
+  final GlobalKey _mrBucksIconKey = GlobalKey();
+  AnimationController? _coinAnimationController;
+  OverlayEntry? _coinOverlayEntry;
+  bool _highlightMrBucks = false;
+  Timer? _highlightTimer;
+  bool _showPointsCelebration = false;
+  int _recentPointsAwarded = 0;
+
+  // Banner state
+  List<BannerModel> _banners = [];
+  bool _isLoadingBanners = false;
 
   // Category/Merchant helpers now imported from utils/category_icons.dart
 
@@ -122,6 +147,9 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   @override
   void dispose() {
     _progressTimer?.cancel();
+    _highlightTimer?.cancel();
+    _coinAnimationController?.dispose();
+    _removeCoinOverlay();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -208,7 +236,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           return;
         }
         // Use preview mode - don't auto-save
-        final result = await ShareIntentService.handleSharedFilePreview(
+        final shareResult = await ShareIntentService.handleSharedFilePreview(
           File(sharedPath),
           onProgress: (status, message) {
             debugPrint('ShareIntent: Progress $status - ${message ?? ''}');
@@ -216,14 +244,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           },
         ).timeout(const Duration(seconds: 60));
 
-        debugPrint('ShareIntent: Result status=${result.status} hasReceiptDetails=${result.receiptDetails != null}');
+        debugPrint('ShareIntent: Result status=${shareResult.status} hasReceiptDetails=${shareResult.receiptDetails != null}');
         
-        if (result.status == ShareIntentStatus.completed && result.receiptDetails != null) {
+        if (shareResult.status == ShareIntentStatus.completed && shareResult.receiptDetails != null) {
           // Dismiss processing dialog
           if (mounted) ShareIntentHandler.dismissProcessingDialog(context);
           
           // Convert ReceiptDetails to receipt map for ReceiptDetailsScreen
-          final receiptDetails = result.receiptDetails!;
+          final receiptDetails = shareResult.receiptDetails!;
           final encryptedUrl = receiptDetails.imageUrl ?? receiptDetails.pdfUrl ?? '';
           // Decrypt URL if needed
           final decryptedUrl = EncryptionHelper.decryptUrl(encryptedUrl) ?? encryptedUrl;
@@ -262,7 +290,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           await Future.delayed(const Duration(milliseconds: 100));
           if (!mounted) return;
           
-          final saved = await Navigator.of(context).push<bool>(
+          final navResult = await Navigator.of(context).push(
             MaterialPageRoute(
               builder: (context) => ReceiptDetailsScreen(
                 receipt: receiptMap,
@@ -287,10 +315,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             debugPrint('ShareIntent: Failed to cleanup shared file: $e');
           }
           
-          // Refresh receipts if user saved the receipt
-          if (saved == true) {
-            await _fetchSavedReceipts();
-          }
+          await _handleReceiptSaveResult(navResult);
           
           return;
         }
@@ -310,7 +335,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(result.error ?? 'Failed to process shared file. Please try again.'),
+              content: Text(shareResult.error ?? 'Failed to process shared file. Please try again.'),
               backgroundColor: Colors.red,
             ),
           );
@@ -421,6 +446,28 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   }
 
   void _onBottomNavTap(int index) {
+    final featureFlagsProvider = Provider.of<FeatureFlagsProvider>(context, listen: false);
+    final isMrBucksEnabled = featureFlagsProvider.isMrBucksEnabled;
+    
+    // If mr bucks is disabled, adjust index mapping
+    // When disabled: Home(0), Reports(1), Upload(2), More(3)
+    // When enabled: Home(0), Reports(1), Upload(2), MR Bucks(3), More(4)
+    if (!isMrBucksEnabled && index == 3) {
+      // This is the "More" tab when mr bucks is disabled
+      Navigator.push(
+        context,
+        PageRouteBuilder(
+          pageBuilder: (context, animation, secondaryAnimation) => MoreOptionsScreen(
+            userId: widget.userId,
+            token: widget.token,
+          ),
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+        ),
+      );
+      return;
+    }
+    
     switch (index) {
       case 0: // Home
         // Already on home screen, do nothing
@@ -431,117 +478,119 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       case 2: // Upload
         _showUploadBottomSheet();
         break;
-      case 3: // MR Bucks
-        Navigator.pushNamed(context, '/mr_bucks');
+      case 3: // MR Bucks (only if enabled)
+        if (isMrBucksEnabled) {
+          Navigator.pushNamed(context, '/mr_bucks');
+        }
         break;
-      case 4: // More
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => MoreOptionsScreen(
-              userId: widget.userId,
-              token: widget.token,
+      case 4: // More (only if mr bucks is enabled)
+        if (isMrBucksEnabled) {
+          Navigator.push(
+            context,
+            PageRouteBuilder(
+              pageBuilder: (context, animation, secondaryAnimation) => MoreOptionsScreen(
+                userId: widget.userId,
+                token: widget.token,
+              ),
+              transitionDuration: Duration.zero,
+              reverseTransitionDuration: Duration.zero,
             ),
-          ),
-        );
+          );
+        }
         break;
     }
   }
 
   void _showUploadBottomSheet() {
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) {
-        return SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Expanded(
-                      child: Text(
-                        'Upload Receipt',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF7E5EFD),
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () => Navigator.pop(ctx),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                ListTile(
-                  leading: Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF7E5EFD).withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Center(child: Text('📷', style: TextStyle(fontSize: 20))),
-                  ),
-                  title: const Text('Take Receipt Photo', style: TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: const Text('Capture a photo of your receipt'),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _pickAndUploadImageFromCamera();
-                  },
-                ),
-                const SizedBox(height: 12),
-                ListTile(
-                  leading: Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF7E5EFD).withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Center(child: Text('📤', style: TextStyle(fontSize: 20))),
-                  ),
-                  title: const Text('Upload Receipt', style: TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: const Text('Select from your gallery'),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    // Show Photos/Documents choice before proceeding
-                    _showUploadDialog();
-                  },
-                ),
-                const SizedBox(height: 12),
-                ListTile(
-                  leading: Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF7E5EFD).withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Center(child: Text('📝', style: TextStyle(fontSize: 20))),
-                  ),
-                  title: const Text('Add Manual Receipt', style: TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: const Text('Enter receipt details manually'),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _createManualReceipt();
-                  },
-                ),
-                const SizedBox(height: 8),
-              ],
-            ),
-          ),
-        );
+    final userProvider = Provider.of<UserProvider>(context, listen: false);
+    final userCountry = userProvider.country;
+
+    UploadSheet.show(
+      context,
+      country: userCountry,
+      onAction: (action) {
+        switch (action) {
+          case UploadAction.trackDistance:
+            _createTrackDistanceReceipt();
+            break;
+          case UploadAction.camera:
+            _pickAndUploadImageFromCamera();
+            break;
+          case UploadAction.gallery:
+            _showUploadDialog();
+            break;
+          case UploadAction.manual:
+            _createManualReceipt();
+            break;
+        }
       },
+    );
+  }
+
+  Widget _buildUploadOption({
+    required BuildContext ctx,
+    required String icon,
+    required Color iconColor,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: const Color(0xFFF1F5FF),
+            width: 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: iconColor.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Center(
+                child: Text(
+                  icon,
+                  style: const TextStyle(fontSize: 24),
+                ),
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black87,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -583,8 +632,9 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       // Load from cache first for immediate display
       await _loadUserNameFromCache();
 
-      // Fetch receipts and subscription data in parallel
+      // Fetch receipts, subscription data, and banners in parallel
       if (mounted) {
+        debugPrint('Dashboard - Starting parallel fetch of receipts, subscription, and banners...');
         final subscriptionProvider = Provider.of<SubscriptionProvider>(context, listen: false);
         await Future.wait([
           _fetchSavedReceipts(),
@@ -596,7 +646,9 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             token: widget.token,
             userId: widget.userId,
           ),
+          _fetchBanners(),
         ]);
+        debugPrint('Dashboard - Parallel fetch completed');
       }
 
       // Then fetch fresh data from API
@@ -748,6 +800,12 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   }
 
   Future<bool> _onWillPop() async {
+    if (_showPointsCelebration) {
+      setState(() {
+        _showPointsCelebration = false;
+      });
+      return false;
+    }
     final now = DateTime.now();
     if (_lastBackPressTime == null ||
         now.difference(_lastBackPressTime!) > const Duration(seconds: 2)) {
@@ -909,13 +967,34 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       ),
     );
 
-    // Only refresh if receipt was actually saved
-    if (result == true) {
-      await _fetchSavedReceipts();
-      // Increment receipt count locally for immediate UI update
-      final subscriptionProvider = Provider.of<SubscriptionProvider>(context, listen: false);
-      subscriptionProvider.incrementReceiptCount();
+    await _handleReceiptSaveResult(
+      result,
+      incrementReceiptCount: true,
+    );
+  }
+
+  // Navigate to track distance flow (creates a manual-style receipt)
+  void _createTrackDistanceReceipt() async {
+    // Check receipt limit first
+    if (!await _canAddReceipt()) {
+      await _showUpgradeDialog();
+      return;
     }
+
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TrackDistanceScreen(
+          userId: widget.userId,
+          token: widget.token,
+        ),
+      ),
+    );
+
+    await _handleReceiptSaveResult(
+      result,
+      incrementReceiptCount: true,
+    );
   }
 
   // Show upload dialog
@@ -1012,8 +1091,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
       return;
     }
 
-    final picker = ImagePicker();
-    final image = await picker.pickImage(source: ImageSource.camera);
+    final image = await DocumentScanService.captureCroppedDocumentImage();
     if (image != null) {
       await _uploadImageToCloudinary(image);
     }
@@ -1070,6 +1148,178 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         });
       }
     }
+  }
+
+  Future<void> _handleReceiptSaveResult(
+    dynamic navResult, {
+    bool incrementReceiptCount = false,
+    bool refreshLimit = false,
+  }) async {
+    final isReceiptSaveResult = navResult is ReceiptSaveResult;
+    final bool shouldRefresh = isReceiptSaveResult
+        ? navResult.saved
+        : navResult == true;
+
+    if (!shouldRefresh) return;
+
+    await _fetchSavedReceipts();
+    if (!mounted) return;
+
+    if (incrementReceiptCount || refreshLimit) {
+      final subscriptionProvider = Provider.of<SubscriptionProvider>(context, listen: false);
+
+      if (incrementReceiptCount) {
+        subscriptionProvider.incrementReceiptCount();
+      }
+
+      if (refreshLimit) {
+        await subscriptionProvider.refreshReceiptLimit(
+          token: widget.token,
+          userId: widget.userId,
+        );
+      }
+    }
+
+    if (isReceiptSaveResult) {
+      final saveResult = navResult as ReceiptSaveResult;
+      final points = saveResult.pointsAwarded;
+      if (points != null && points > 0) {
+        _showPointsCelebrationOverlay(points);
+      }
+      
+      // Show duplicate dialog if duplicates found
+      if (saveResult.hasDuplicates && saveResult.duplicateReceipts != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            showDialog(
+              context: context,
+              builder: (context) => DuplicateReceiptDialog(
+                duplicateReceipts: saveResult.duplicateReceipts!,
+                onViewReceipt: (receiptId) {
+                  // Navigate to receipt details if needed
+                  // Navigator.push(...);
+                },
+              ),
+            );
+          }
+        });
+      }
+    }
+  }
+
+  void _showMrBucksCoinAnimation(int pointsAwarded) {
+    if (!mounted) return;
+
+    final overlay = Overlay.of(context, rootOverlay: true);
+    final iconContext = _mrBucksIconKey.currentContext;
+    if (overlay == null || iconContext == null) return;
+
+    final renderBox = iconContext.findRenderObject() as RenderBox?;
+    if (renderBox == null || !renderBox.hasSize) return;
+
+    final iconPosition = renderBox.localToGlobal(Offset.zero);
+    final iconSize = renderBox.size;
+    final mediaQuery = MediaQuery.of(context);
+
+    final availableHeight = mediaQuery.size.height - mediaQuery.padding.top - mediaQuery.padding.bottom;
+    final start = Offset(
+      mediaQuery.size.width / 2 - 30,
+      mediaQuery.padding.top + (availableHeight / 2) - 30,
+    );
+    final end = Offset(
+      iconPosition.dx + (iconSize.width / 2) - 30,
+      iconPosition.dy - 16,
+    );
+
+    _coinAnimationController?.dispose();
+    _coinAnimationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    );
+
+    final animation = CurvedAnimation(
+      parent: _coinAnimationController!,
+      curve: Curves.easeOutCubic,
+    );
+
+    _removeCoinOverlay();
+    _coinOverlayEntry = OverlayEntry(
+      builder: (context) => _CoinJumpOverlay(
+        animation: animation,
+        start: start,
+        end: end,
+        pointsAwarded: pointsAwarded,
+      ),
+    );
+    overlay.insert(_coinOverlayEntry!);
+
+    _coinAnimationController!.forward().whenComplete(() {
+      _coinAnimationController?.dispose();
+      _coinAnimationController = null;
+      _removeCoinOverlay();
+
+      if (!mounted) return;
+      setState(() {
+        _highlightMrBucks = true;
+      });
+
+      _highlightTimer?.cancel();
+      _highlightTimer = Timer(const Duration(milliseconds: 1200), () {
+        if (mounted) {
+          setState(() {
+            _highlightMrBucks = false;
+          });
+        }
+      });
+    });
+  }
+
+  void _showPointsCelebrationOverlay(int pointsAwarded) {
+    if (!mounted) return;
+    setState(() {
+      _recentPointsAwarded = pointsAwarded;
+      _showPointsCelebration = true;
+    });
+  }
+
+  void _dismissPointsCelebrationAndAnimate() {
+    if (!mounted) return;
+    setState(() {
+      _showPointsCelebration = false;
+    });
+    if (_recentPointsAwarded > 0) {
+      // Wait for the next frame to ensure overlay is fully removed before starting animation
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _recentPointsAwarded > 0) {
+          _showMrBucksCoinAnimation(_recentPointsAwarded);
+        }
+      });
+    }
+  }
+
+  void _removeCoinOverlay() {
+    _coinOverlayEntry?.remove();
+    _coinOverlayEntry = null;
+  }
+
+  Widget _buildMrBucksNavIcon({required bool isActive}) {
+    final icon = Icon(
+      isActive ? Icons.savings : Icons.savings_outlined,
+      size: isActive ? 28 : 26,
+    );
+
+    final animatedIcon = AnimatedScale(
+      scale: _highlightMrBucks ? 1.15 : 1.0,
+      duration: const Duration(milliseconds: 200),
+      child: icon,
+    );
+
+    return SizedBox(
+      key: isActive ? null : _mrBucksIconKey,
+      width: 36,
+      height: 36,
+      child: Center(child: animatedIcon),
+    );
   }
 
   // Send PDF URL to backend using ApiService
@@ -1145,12 +1395,10 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           );
 
           // Only refresh if receipt was actually saved
-          if (result == true) {
-            await _fetchSavedReceipts();
-            // Increment receipt count locally for immediate UI update
-            final subscriptionProvider = Provider.of<SubscriptionProvider>(context, listen: false);
-            subscriptionProvider.incrementReceiptCount();
-          }
+          await _handleReceiptSaveResult(
+            result,
+            incrementReceiptCount: true,
+          );
         } else {
           throw Exception(
               'Unexpected response structure: Missing receiptDetails');
@@ -1248,12 +1496,10 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           );
 
           // Only refresh if receipt was actually saved
-          if (result == true) {
-            await _fetchSavedReceipts();
-            // Increment receipt count locally for immediate UI update
-            final subscriptionProvider = Provider.of<SubscriptionProvider>(context, listen: false);
-            subscriptionProvider.incrementReceiptCount();
-          }
+          await _handleReceiptSaveResult(
+            result,
+            incrementReceiptCount: true,
+          );
         } else {
           throw Exception(
               'Unexpected response structure: Missing receiptDetails');
@@ -1403,6 +1649,40 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           debugPrint('Dashboard - No refresh needed, no changes made in reports');
         }
       },
+    );
+  }
+
+  bool _hasDuplicateInfo(Map<String, dynamic> receipt) {
+    // Check if receipt has duplicate information
+    if (receipt['duplicateReceipts'] != null && receipt['duplicateReceipts'] is List) {
+      final duplicates = receipt['duplicateReceipts'] as List;
+      return duplicates.isNotEmpty;
+    }
+    return false;
+  }
+
+  List<DuplicateReceipt> _extractDuplicateReceipts(Map<String, dynamic> receipt) {
+    if (receipt['duplicateReceipts'] != null && receipt['duplicateReceipts'] is List) {
+      return (receipt['duplicateReceipts'] as List)
+          .map((item) => DuplicateReceipt.fromJson(item as Map<String, dynamic>))
+          .toList();
+    }
+    return [];
+  }
+
+  void _showDuplicateDialog(BuildContext context, Map<String, dynamic> receipt) {
+    final duplicates = _extractDuplicateReceipts(receipt);
+    if (duplicates.isEmpty) return;
+
+    showDialog(
+      context: context,
+      builder: (context) => DuplicateReceiptDialog(
+        duplicateReceipts: duplicates,
+        onViewReceipt: (receiptId) {
+          // Navigate to receipt details if needed
+          // This would require receipt ID mapping
+        },
+      ),
     );
   }
 
@@ -2311,15 +2591,10 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 );
 
                 // Only refresh if receipt was actually modified
-                if (result == true) {
-                  await _fetchSavedReceipts();
-                  // Refresh receipt limit after modification
-                  final subscriptionProvider = Provider.of<SubscriptionProvider>(context, listen: false);
-                  await subscriptionProvider.refreshReceiptLimit(
-                    token: widget.token,
-                    userId: widget.userId,
-                  );
-                }
+                await _handleReceiptSaveResult(
+                  result,
+                  refreshLimit: true,
+                );
               } else {
                 // API failed, show error
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -2433,6 +2708,17 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                               ),
                           ],
                         ),
+                        // Duplicate badge if duplicates exist
+                        if (_hasDuplicateInfo(receipt))
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: DuplicateReceiptBadge(
+                              duplicateReceipts: _extractDuplicateReceipts(receipt),
+                              onResolve: () {
+                                _showDuplicateDialog(context, receipt);
+                              },
+                            ),
+                          ),
                       ],
                     ),
                   ),
@@ -2483,62 +2769,241 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: _onWillPop,
-      child: Scaffold(
-        key: _scaffoldKey,
-        backgroundColor: Colors.white,
-        appBar: AppBar(
-          backgroundColor: const Color(0xFF7E5EFD),
-          elevation: 0,
-          title: const Center(
-            child: AppLogo(isHeaderLogo: true),
-          ),
-          leading: IconButton(
-            icon: const Icon(Icons.menu, color: Colors.white, size: 28),
-            onPressed: () => _scaffoldKey.currentState?.openDrawer(),
-          ),
-          actions: [
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert, color: Colors.white, size: 28),
-              color: Colors.white,
-              offset: const Offset(0, 50),
-              elevation: 8,
-              onSelected: (value) {
-                if (value == 'whats_new') {
-                  _showWhatsNewDialog();
-                } else if (value == 'report_issue') {
-                  _showReportIssueDialog();
+    // Use web-optimized layout for web platform
+    if (kIsWeb) {
+      return WebDashboardLayout(
+        userId: widget.userId,
+        token: widget.token,
+        savedReceipts: savedReceipts,
+        isLoading: _isLoading,
+        isLoadingUserName: _isLoadingUserName,
+        userName: _userName,
+        onRefresh: () async {
+          await _fetchSavedReceipts();
+          await _refreshUserName();
+          await _fetchBanners(forceRefresh: true);
+          final subscriptionProvider = Provider.of<SubscriptionProvider>(context, listen: false);
+          await subscriptionProvider.refreshSubscriptionData(
+            token: widget.token,
+            userId: widget.userId,
+            userI: '',
+          );
+          await subscriptionProvider.refreshReceiptLimit(
+            token: widget.token,
+            userId: widget.userId,
+          );
+        },
+        onPickAndUploadImageFromCamera: _pickAndUploadImageFromCamera,
+        onShowUploadDialog: _showUploadDialog,
+        onPickFilesDirectly: (BuildContext dialogContext) async {
+          await _pickAndUploadFile();
+        },
+        onCreateManualReceipt: _createManualReceipt,
+        onCreateTrackDistanceReceipt: _createTrackDistanceReceipt,
+        onEmailReceiptInfo: () {
+          // Navigate to email receipts screen or show dialog
+          Navigator.pushNamed(context, '/email_receipts');
+        },
+        onCreateExpenseReport: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => ReportsScreen(userId: widget.userId),
+            ),
+          );
+        },
+        onReceiptTap: (context, receipt) async {
+          // Show loading indicator
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => const Center(
+              child: CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF7E5EFD)),
+              ),
+            ),
+          );
+
+          try {
+            final receiptId = receipt['id']?.toString() ?? '';
+            final response = await ApiService.get(
+              '/receipts/details/$receiptId?userId=${widget.userId}',
+              token: widget.token,
+            );
+
+            if (context.mounted) Navigator.pop(context);
+
+            if (response.statusCode == 200) {
+              final data = json.decode(response.body);
+              final freshReceipt = data['receipt'] ?? data;
+
+              final encryptedImageLink = freshReceipt['imageLink'] as String?;
+              String decryptedImageUrl = receipt['decryptedImageLink'] ?? receipt['imageLink'] ?? '';
+              if (encryptedImageLink != null) {
+                final decrypted = EncryptionHelper.decryptUrl(encryptedImageLink);
+                if (decrypted != null) {
+                  decryptedImageUrl = decrypted;
+                  freshReceipt['decryptedImageLink'] = decryptedImageUrl;
                 }
-              },
-              itemBuilder: (BuildContext context) => [
-                const PopupMenuItem<String>(
-                  value: 'whats_new',
-                  child: Row(
-                    children: [
-                      Icon(Icons.star, color: Colors.orange, size: 24),
-                      SizedBox(width: 12),
-                      Text('What\'s New'),
-                    ],
+              }
+
+              if (context.mounted) {
+                final result = await showDialog(
+                  context: context,
+                  builder: (context) => ReviewExtractedDataDialog(
+                    receipt: freshReceipt,
+                    imageUrl: decryptedImageUrl,
+                    userId: widget.userId,
+                    token: widget.token,
+                    onRefresh: () async {
+                      await _fetchSavedReceipts();
+                      await _refreshUserName();
+                    },
+                  ),
+                );
+
+                if (result == true) {
+                  await _handleReceiptSaveResult(result, refreshLimit: true);
+                }
+              }
+            }
+          } catch (e) {
+            if (context.mounted && Navigator.canPop(context)) {
+              Navigator.pop(context);
+            }
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Failed to load receipt details. Please try again.'),
+                  backgroundColor: Colors.red,
+                ),
+              );
+            }
+          }
+        },
+        onLogout: () => _logout(context),
+        onNavigateToReports: () async {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => ReportsScreen(userId: widget.userId),
+            ),
+          );
+        },
+        banners: _banners,
+        isLoadingBanners: _isLoadingBanners,
+        isUploading: _isUploading,
+        uploadStatus: _uploadStatus,
+        currentStep: _currentStep,
+        uploadSteps: _uploadSteps,
+      );
+    }
+
+    // Mobile layout (existing implementation)
+    final scaffold = Scaffold(
+      key: _scaffoldKey,
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // MR Logo square
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF905CFF), Color(0xFF7A4BD9)],
+                ),
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF905CFF).withOpacity(0.25),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: const Center(
+                child: Text(
+                  'MR',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
-                const PopupMenuItem<String>(
-                  value: 'report_issue',
-                  child: Row(
-                    children: [
-                      Icon(Icons.flag, color: Colors.red, size: 24),
-                      SizedBox(width: 12),
-                      Text('Share Feedback'),
-                    ],
-                  ),
-                ),
-              ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            // Manage Receipt text
+            const Text(
+              'Manage Receipt',
+              style: TextStyle(
+                color: Colors.black,
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ],
         ),
-        drawer: _buildDrawer(),
-        body: _isUploading
-            ? Center(
+        leading: IconButton(
+          icon: const Icon(Icons.menu, color: Colors.black, size: 28),
+          onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+        ),
+        actions: [
+          // Menu button
+          PopupMenuButton<String>(
+            icon: const Text(
+              '⋯',
+              style: TextStyle(
+                color: Colors.black,
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            color: Colors.white,
+            offset: const Offset(0, 50),
+            elevation: 8,
+            onSelected: (value) {
+              if (value == 'whats_new') {
+                _showWhatsNewDialog();
+              } else if (value == 'report_issue') {
+                _showReportIssueDialog();
+              }
+            },
+            itemBuilder: (BuildContext context) => [
+              const PopupMenuItem<String>(
+                value: 'whats_new',
+                child: Row(
+                  children: [
+                    Icon(Icons.star, color: Colors.orange, size: 24),
+                    SizedBox(width: 12),
+                    Text('What\'s New'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem<String>(
+                value: 'report_issue',
+                child: Row(
+                  children: [
+                    Icon(Icons.flag, color: Colors.red, size: 24),
+                    SizedBox(width: 12),
+                    Text('Share Feedback'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+      drawer: _buildDrawer(),
+      body: _isUploading
+          ? Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -2585,10 +3050,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             ],
           ),
         )
-            : RefreshIndicator(
+          : RefreshIndicator(
           onRefresh: () async {
             await _fetchSavedReceipts();
             await _refreshUserName();
+            await _fetchBanners(forceRefresh: true);
             // Refresh subscription data
             final subscriptionProvider = Provider.of<SubscriptionProvider>(context, listen: false);
             await subscriptionProvider.refreshSubscriptionData(
@@ -2604,11 +3070,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           child: SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             child: Padding(
-              padding: const EdgeInsets.all(24.0),
+              padding: const EdgeInsets.fromLTRB(24.0, 16.0, 24.0, 24.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 4),
+                  // Banner Carousel (Refer & Earn and other banners)
+                  _buildBannerCarousel(),
+                  const SizedBox(height: 24),
                   // Enhanced welcome message with better fallback handling
                   Consumer<UserProvider>(
                     builder: (context, userProvider, child) {
@@ -2621,166 +3090,339 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                         displayName = _userName;
                       }
 
-                      return Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            'Welcome, $displayName!',
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w500,
-                              color: Color(0xFF7E5EFD),
-                            ),
-                            textAlign: TextAlign.center,
-                          ),
-                          if (_isLoadingUserName) ...[
-                            const SizedBox(width: 8),
-                            const SizedBox(
-                              width: 12,
-                              height: 12,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF7E5EFD)),
+                          Row(
+                            children: [
+                              Text(
+                                'Hi $displayName!',
+                                style: const TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black,
+                                ),
                               ),
-                            ),
-                          ],
+                              if (_isLoadingUserName) ...[
+                                const SizedBox(width: 8),
+                                const SizedBox(
+                                  width: 12,
+                                  height: 12,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF7E5EFD)),
+                                  ),
+                                ),
+                              ] else ...[
+                                const SizedBox(width: 8),
+                                const Text(
+                                  '👋',
+                                  style: TextStyle(fontSize: 24),
+                                ),
+                              ],
+                            ],
+                          ),
                         ],
                       );
                     },
                   ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Your receipts, organized and accessible\nin one place.',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Colors.grey,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-
-                  // Receipt limit bar (using cached data from SubscriptionProvider)
-                  _buildReceiptLimitBar(),
-
-                  const SizedBox(height: 16),
-
-                  // Take Receipt Photo Button
-                  ElevatedButton(
-                    onPressed: _isUploading
-                        ? null
-                        : _pickAndUploadImageFromCamera,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF7E5EFD),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(30),
+                  const SizedBox(height: 20),
+                  // Three receipt action cards
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      return Row(
+                        children: [
+                          Expanded(
+                            child: Material(
+                              color: Colors.transparent,
+                              child: InkWell(
+                                onTap: _isUploading ? null : _pickAndUploadImageFromCamera,
+                                child: Container(
+                                  height: 120,
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(20),
+                                    border: Border.all(
+                                      color: const Color(0xFFF1F5FF),
+                                      width: 1,
+                                    ),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: const Color(0xFF7E5EFD).withOpacity(0.08),
+                                        blurRadius: 12,
+                                        offset: const Offset(0, 4),
+                                      ),
+                                    ],
+                                  ),
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(20),
+                                    child: Stack(
+                                      children: [
+                                        Positioned(
+                                          top: 0,
+                                          left: 0,
+                                          right: 0,
+                                          child: Container(
+                                            height: 4,
+                                            color: const Color(0xFF7E5EFD),
+                                          ),
+                                        ),
+                                        Center(
+                                          child: Padding(
+                                            padding: const EdgeInsets.all(12),
+                                            child: Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              mainAxisAlignment: MainAxisAlignment.center,
+                                              crossAxisAlignment: CrossAxisAlignment.center,
+                                              children: [
+                                                Container(
+                                                  width: 48,
+                                                  height: 48,
+                                                  decoration: BoxDecoration(
+                                                    color: const Color(0xFF7E5EFD).withOpacity(0.1),
+                                                    borderRadius: BorderRadius.circular(14),
+                                                  ),
+                                                  child: const Center(
+                                                    child: Text(
+                                                      '📷',
+                                                      style: TextStyle(fontSize: 24),
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 8),
+                                                const Text(
+                                                  'Scan',
+                                                  style: TextStyle(
+                                                    fontSize: 14,
+                                                    fontWeight: FontWeight.w600,
+                                                    color: Colors.black,
+                                                    decoration: TextDecoration.none,
+                                                  ),
+                                                  textAlign: TextAlign.center,
+                                                  overflow: TextOverflow.visible,
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: _isUploading ? null : _showUploadDialog,
+                            child: Container(
+                              height: 120,
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: const Color(0xFFF1F5FF),
+                                  width: 1,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.green.withOpacity(0.08),
+                                    blurRadius: 12,
+                                    offset: const Offset(0, 4),
+                                  ),
+                                ],
+                              ),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(20),
+                                child: Stack(
+                                  children: [
+                                    Positioned(
+                                      top: 0,
+                                      left: 0,
+                                      right: 0,
+                                      child: Container(
+                                        height: 4,
+                                        color: Colors.green,
+                                      ),
+                                    ),
+                                    Center(
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(12),
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          crossAxisAlignment: CrossAxisAlignment.center,
+                                          children: [
+                                            Container(
+                                              width: 48,
+                                              height: 48,
+                                              decoration: BoxDecoration(
+                                                color: Colors.green.withOpacity(0.1),
+                                                borderRadius: BorderRadius.circular(14),
+                                              ),
+                                              child: const Center(
+                                                child: Text(
+                                                  '📤',
+                                                  style: TextStyle(fontSize: 24),
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(height: 8),
+                                            const Text(
+                                              'Upload',
+                                              style: TextStyle(
+                                                fontSize: 14,
+                                                fontWeight: FontWeight.w600,
+                                                color: Colors.black,
+                                                decoration: TextDecoration.none,
+                                              ),
+                                              textAlign: TextAlign.center,
+                                              overflow: TextOverflow.visible,
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
                       ),
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      minimumSize: const Size(double.infinity, 56),
-                    ),
-                    child: const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text('📷', style: TextStyle(fontSize: 16)),
-                        SizedBox(width: 8),
-                        Text(
-                          'Take Receipt Photo',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: _isUploading ? null : _createManualReceipt,
+                            child: Container(
+                              height: 120,
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: const Color(0xFFF1F5FF),
+                                  width: 1,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.orange.withOpacity(0.08),
+                                    blurRadius: 12,
+                                    offset: const Offset(0, 4),
+                                  ),
+                                ],
+                              ),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(20),
+                                child: Stack(
+                                  children: [
+                                    Positioned(
+                                      top: 0,
+                                      left: 0,
+                                      right: 0,
+                                      child: Container(
+                                        height: 4,
+                                        color: Colors.orange,
+                                      ),
+                                    ),
+                                    Center(
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(12),
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          crossAxisAlignment: CrossAxisAlignment.center,
+                                          children: [
+                                            Container(
+                                              width: 48,
+                                              height: 48,
+                                              decoration: BoxDecoration(
+                                                color: Colors.orange.withOpacity(0.1),
+                                                borderRadius: BorderRadius.circular(14),
+                                              ),
+                                              child: const Center(
+                                                child: Text(
+                                                  '📝',
+                                                  style: TextStyle(fontSize: 24),
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(height: 8),
+                                            const Text(
+                                              'Manual',
+                                              style: TextStyle(
+                                                fontSize: 14,
+                                                fontWeight: FontWeight.w600,
+                                                color: Colors.black,
+                                                decoration: TextDecoration.none,
+                                              ),
+                                              textAlign: TextAlign.center,
+                                              overflow: TextOverflow.visible,
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-
-                  const SizedBox(height: 16),
-
-                  // Upload Receipt Button
-                  OutlinedButton(
-                    onPressed: _isUploading ? null : _showUploadDialog,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF7E5EFD),
-                      side: const BorderSide(color: Color(0xFF7E5EFD)),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(30),
                       ),
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      minimumSize: const Size(double.infinity, 56),
-                    ),
-                    child: const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text('📤', style: TextStyle(fontSize: 16, color: Color(0xFF7E5EFD))),
-                        SizedBox(width: 8),
-                        Text(
-                          'Upload Receipt',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                            color: Color(0xFF7E5EFD),
-                          ),
-                        ),
-                      ],
-                    ),
+                    ],
+                  );
+                  },
                   ),
+                  const SizedBox(height: 32),
 
-                  const SizedBox(height: 16),
-
-                  // Manual Receipt Button
-                  OutlinedButton(
-                    onPressed: _isUploading ? null : _createManualReceipt,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF7E5EFD),
-                      side: const BorderSide(color: Color(0xFF7E5EFD)),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(30),
+                  // Recent Activity section
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Recent Receipts',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black,
+                        ),
                       ),
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      minimumSize: const Size(double.infinity, 56),
-                    ),
-                    child: const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text('📝', style: TextStyle(fontSize: 16, color: Color(0xFF7E5EFD))),
-                        SizedBox(width: 8),
-                        Text(
-                          'Add Manual Receipt',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                            color: Color(0xFF7E5EFD),
-                          ),
+                      GestureDetector(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => ReportsScreen(
+                                userId: widget.userId,
+                              ),
+                            ),
+                          );
+                        },
+                        child: const Row(
+                          children: [
+                            Text(
+                              'View all',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Color(0xFF7E5EFD),
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            SizedBox(width: 4),
+                            Icon(
+                              Icons.arrow_forward,
+                              size: 16,
+                              color: Color(0xFF7E5EFD),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                  ),
-
-                  const SizedBox(height: 40),
-
-                  Align(
-                    alignment: Alignment.center,
-                    child: Column(
-                      children: [
-                        const Text(
-                          'Recent Uploads',
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Your Latest Receipts at a Glance!',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.grey.shade600,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
 
                   const SizedBox(height: 24),
@@ -2790,53 +3432,517 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               ),
             ),
           ),
+      ),
+      bottomNavigationBar: AppBottomNavBar(
+        currentRoute: 'dashboard',
+        userId: widget.userId,
+        token: widget.token,
+        onUploadTap: _showUploadBottomSheet,
+      ),
+    );
+
+    return WillPopScope(
+      onWillPop: _onWillPop,
+      child: Stack(
+        children: [
+          scaffold,
+          if (_showPointsCelebration)
+            _PointsCelebrationOverlay(
+              points: _recentPointsAwarded,
+              onContinue: _dismissPointsCelebrationAndAnimate,
+            ),
+        ],
+      ),
+    );
+  }
+
+
+  Widget _buildReceiptActionCard({
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required Color iconColor,
+    required Color borderColor,
+    required VoidCallback? onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border(
+            top: BorderSide(color: borderColor, width: 4),
+            left: const BorderSide(color: Color(0xFFF1F5FF), width: 1),
+            right: const BorderSide(color: Color(0xFFF1F5FF), width: 1),
+            bottom: const BorderSide(color: Color(0xFFF1F5FF), width: 1),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: borderColor.withOpacity(0.08),
+              blurRadius: 24,
+              spreadRadius: 0,
+              offset: const Offset(0, 6),
+            ),
+          ],
         ),
-        bottomNavigationBar: Consumer<FeatureFlagsProvider>(
-          builder: (context, featureFlagsProvider, child) {
-            return BottomNavigationBar(
-              type: BottomNavigationBarType.fixed,
-              backgroundColor: Colors.white,
-              selectedItemColor: const Color(0xFF7E5EFD),
-              unselectedItemColor: Colors.grey.shade600,
-              selectedFontSize: 12,
-              unselectedFontSize: 12,
-              currentIndex: 0, // Home is selected by default
-              onTap: (index) {
-                _onBottomNavTap(index);
-              },
-              items: [
-                const BottomNavigationBarItem(
-                  icon: Icon(Icons.home_outlined, size: 26),
-                  activeIcon: Icon(Icons.home, size: 28),
-                  label: 'Home',
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    iconColor.withOpacity(0.1),
+                    iconColor.withOpacity(0.05),
+                  ],
                 ),
-                const BottomNavigationBarItem(
-                  icon: Icon(Icons.analytics_outlined, size: 26),
-                  activeIcon: Icon(Icons.analytics, size: 28),
-                  label: 'Reports',
-                ),
-                const BottomNavigationBarItem(
-                  icon: Icon(Icons.add_circle_outline, size: 26),
-                  activeIcon: Icon(Icons.add_circle, size: 28),
-                  label: 'Upload',
-                ),
-                const BottomNavigationBarItem(
-                  icon: Icon(Icons.savings_outlined, size: 26),
-                  activeIcon: Icon(Icons.savings, size: 28),
-                  label: 'MR Bucks',
-                ),
-                const BottomNavigationBarItem(
-                  icon: Icon(Icons.more_horiz, size: 26),
-                  activeIcon: Icon(Icons.more_horiz, size: 28),
-                  label: 'More',
-                ),
-              ],
-            );
-          },
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Icon(
+                icon,
+                color: iconColor,
+                size: 24,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1A1A1A),
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              style: const TextStyle(
+                fontSize: 13,
+                color: Color(0xFF64748B),
+                height: 1.4,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 2,
+            ),
+          ],
         ),
       ),
     );
   }
 
+  /// Fetch banners from API
+  Future<void> _fetchBanners({bool forceRefresh = false}) async {
+    debugPrint('Dashboard - _fetchBanners called (forceRefresh: $forceRefresh)');
+    
+    if (mounted) {
+      setState(() {
+        _isLoadingBanners = true;
+      });
+    }
+
+    try {
+      debugPrint('Dashboard - Creating BannerService instance...');
+      final bannerService = BannerService();
+      debugPrint('Dashboard - Calling bannerService.fetchBanners...');
+      final banners = await bannerService.fetchBanners(forceRefresh: forceRefresh);
+      debugPrint('Dashboard - Received ${banners.length} banners from API');
+
+      if (mounted) {
+        setState(() {
+          _banners = banners;
+          _isLoadingBanners = false;
+        });
+        debugPrint('Dashboard - Banners state updated. Total banners: ${_banners.length}');
+      }
+    } catch (e, stackTrace) {
+      debugPrint('Dashboard - Error fetching banners: $e');
+      debugPrint('Dashboard - Stack trace: $stackTrace');
+      if (mounted) {
+        setState(() {
+          _isLoadingBanners = false;
+        });
+      }
+    }
+  }
+
+  /// Build banner carousel widget
+  Widget _buildBannerCarousel() {
+    if (_isLoadingBanners) {
+      // Show loading placeholder or return empty
+      return const SizedBox.shrink();
+    }
+
+    if (_banners.isEmpty) {
+      // Return empty if no banners from API - no fallback banner
+      return const SizedBox.shrink();
+    }
+
+    // Filter banners that are currently visible
+    final visibleBanners = _banners.where((BannerModel banner) => banner.isVisible).toList();
+
+    if (visibleBanners.isEmpty) {
+      // Return empty if no visible banners - no fallback banner
+      return const SizedBox.shrink();
+    }
+
+    return BannerCarousel(banners: visibleBanners);
+  }
+
   // Price Breakup functionality removed from dashboard - only available on receipt detail screen
+}
+
+class _CoinJumpOverlay extends StatelessWidget {
+  final Animation<double> animation;
+  final Offset start;
+  final Offset end;
+  final int pointsAwarded;
+
+  const _CoinJumpOverlay({
+    required this.animation,
+    required this.start,
+    required this.end,
+    required this.pointsAwarded,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: AnimatedBuilder(
+        animation: animation,
+        builder: (context, child) {
+          final t = animation.value.clamp(0.0, 1.0);
+          const holdFraction = 0.35;
+          final bool inHoldPhase = t < holdFraction;
+          final double travelT = inHoldPhase ? 0.0 : ((t - holdFraction) / (1 - holdFraction)).clamp(0.0, 1.0);
+          final dx = inHoldPhase ? start.dx : _lerp(start.dx, end.dx, travelT);
+          final dyBase = inHoldPhase ? start.dy : _lerp(start.dy, end.dy, travelT);
+          final jump = inHoldPhase ? 0.0 : -4 * (travelT - 0.5) * (travelT - 0.5) + 1;
+          final dy = dyBase - (inHoldPhase ? 0.0 : jump * 90);
+          final opacity = t < 0.9 ? 1.0 : (1 - (t - 0.9) / 0.1).clamp(0.0, 1.0);
+
+          return SizedBox.expand(
+            child: Stack(
+              children: [
+                Positioned(
+                  left: dx,
+                  top: dy,
+                  child: Opacity(
+                    opacity: opacity,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.65),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            '+$pointsAwarded',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const _RewardCoinIcon(size: 48),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+double _lerp(double start, double end, double t) {
+  return start + (end - start) * t;
+}
+
+class _PointsCelebrationOverlay extends StatefulWidget {
+  final int points;
+  final VoidCallback onContinue;
+
+  const _PointsCelebrationOverlay({
+    required this.points,
+    required this.onContinue,
+  });
+
+  @override
+  State<_PointsCelebrationOverlay> createState() => _PointsCelebrationOverlayState();
+}
+
+class _PointsCelebrationOverlayState extends State<_PointsCelebrationOverlay>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  Timer? _autoCloseTimer;
+  final List<_ConfettiPiece> _confettiPieces = [];
+  final Random _random = Random();
+  static const int _confettiCount = 35;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2400),
+    )..repeat();
+    _generateConfetti();
+    _autoCloseTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) {
+        widget.onContinue();
+      }
+    });
+  }
+
+  void _generateConfetti() {
+    _confettiPieces.clear();
+    const colors = [
+      Color(0xFFFFD700),
+      Color(0xFF7C57FF),
+      Color(0xFFFF4081),
+      Color(0xFF4CAF50),
+      Color(0xFF2196F3),
+    ];
+
+    for (int i = 0; i < _confettiCount; i++) {
+      _confettiPieces.add(
+        _ConfettiPiece(
+          startX: _random.nextDouble(),
+          phase: _random.nextDouble(),
+          speed: 0.8 + _random.nextDouble() * 0.6,
+          size: 6 + _random.nextDouble() * 4,
+          color: colors[_random.nextInt(colors.length)],
+          swing: -18 + _random.nextDouble() * 36,
+          rotation: (_random.nextDouble() * 2 + 1) * pi,
+        ),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _autoCloseTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned.fill(
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, child) {
+          return Container(
+            color: Colors.black.withOpacity(0.6),
+            alignment: Alignment.center,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final double cardWidth = min(constraints.maxWidth * 0.72, 300);
+                return SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(28),
+                          child: Stack(
+                            children: [
+                              Container(
+                                width: cardWidth,
+                                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 26),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(28),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withOpacity(0.25),
+                                      blurRadius: 25,
+                                      offset: const Offset(0, 16),
+                                    ),
+                                  ],
+                                ),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const _RewardCoinIcon(size: 56),
+                                    const SizedBox(height: 16),
+                                    Text(
+                                      '+${widget.points} Points Earned!',
+                                      style: const TextStyle(
+                                        fontSize: 24,
+                                        fontWeight: FontWeight.w700,
+                                        color: Color(0xFF7C57FF),
+                                        decoration: TextDecoration.none,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                    const SizedBox(height: 12),
+                                    const Text(
+                                      'Keep earning more MR Bucks!',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        color: Color(0xFF7C57FF),
+                                        fontWeight: FontWeight.w500,
+                                        decoration: TextDecoration.none,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Positioned(
+                                left: 0,
+                                right: 0,
+                                bottom: 0,
+                                height: 120,
+                                child: IgnorePointer(
+                                  child: CustomPaint(
+                                    painter: _ConfettiPainter(
+                                      pieces: _confettiPieces,
+                                      progress: _controller.value,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ConfettiPiece {
+  final double startX;
+  final double phase;
+  final double speed;
+  final double size;
+  final Color color;
+  final double swing;
+  final double rotation;
+
+  _ConfettiPiece({
+    required this.startX,
+    required this.phase,
+    required this.speed,
+    required this.size,
+    required this.color,
+    required this.swing,
+    required this.rotation,
+  });
+}
+
+class _ConfettiPainter extends CustomPainter {
+  final List<_ConfettiPiece> pieces;
+  final double progress;
+
+  _ConfettiPainter({
+    required this.pieces,
+    required this.progress,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final piece in pieces) {
+      final t = (progress * piece.speed + piece.phase) % 1.0;
+      final dx = piece.startX * size.width + sin(t * pi * 2) * piece.swing;
+      final dy = t * size.height;
+
+      if (dy < 0 || dy > size.height) continue;
+
+      canvas.save();
+      canvas.translate(dx, dy);
+      canvas.rotate(t * piece.rotation);
+      final rect = Rect.fromCenter(
+        center: Offset.zero,
+        width: piece.size,
+        height: piece.size * 1.4,
+      );
+      final paint = Paint()..color = piece.color;
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, const Radius.circular(2)),
+        paint,
+      );
+      canvas.restore();
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ConfettiPainter oldDelegate) {
+    return oldDelegate.progress != progress || oldDelegate.pieces != pieces;
+  }
+}
+
+class _RewardCoinIcon extends StatelessWidget {
+  final double size;
+
+  const _RewardCoinIcon({required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    final double innerSize = size * 0.76;
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFFE082), Color(0xFFFFB300)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.orange.withOpacity(0.55),
+            blurRadius: size * 0.18,
+            spreadRadius: size * 0.04,
+          ),
+        ],
+      ),
+      child: Center(
+        child: Container(
+          width: innerSize,
+          height: innerSize,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const LinearGradient(
+              colors: [Color(0xFFFFF8E1), Color(0xFFFFD54F)],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+            ),
+          ),
+          child: Icon(
+            Icons.workspace_premium,
+            color: Colors.orange.shade700,
+            size: innerSize * 0.6,
+          ),
+        ),
+      ),
+    );
+  }
 }

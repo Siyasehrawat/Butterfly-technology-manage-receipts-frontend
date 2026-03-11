@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../screens/receipt_details_screen.dart';
+import '../widgets/duplicate_receipt_badge.dart';
+import '../models/receipt_models.dart';
 
 class ReceiptItem extends StatelessWidget {
   final Map<String, dynamic> receipt;
@@ -15,6 +17,40 @@ class ReceiptItem extends StatelessWidget {
     final str = raw.toString();
     final cleaned = str.replaceAll(RegExp(r'[^0-9.\\-]'), '');
     return double.tryParse(cleaned) ?? 0.0;
+  }
+
+  bool _hasDuplicateInfo(Map<String, dynamic> receipt) {
+    // Check if receipt has duplicate information
+    if (receipt['duplicateReceipts'] != null && receipt['duplicateReceipts'] is List) {
+      final duplicates = receipt['duplicateReceipts'] as List;
+      return duplicates.isNotEmpty;
+    }
+    return false;
+  }
+
+  List<DuplicateReceipt> _extractDuplicateReceipts(Map<String, dynamic> receipt) {
+    if (receipt['duplicateReceipts'] != null && receipt['duplicateReceipts'] is List) {
+      return (receipt['duplicateReceipts'] as List)
+          .map((item) => DuplicateReceipt.fromJson(item as Map<String, dynamic>))
+          .toList();
+    }
+    return [];
+  }
+
+  void _showDuplicateDialog(BuildContext context, Map<String, dynamic> receipt) {
+    final duplicates = _extractDuplicateReceipts(receipt);
+    if (duplicates.isEmpty) return;
+
+    showDialog(
+      context: context,
+      builder: (context) => DuplicateReceiptDialog(
+        duplicateReceipts: duplicates,
+        onViewReceipt: (receiptId) {
+          // Navigate to receipt details if needed
+          // This would require receipt ID mapping
+        },
+      ),
+    );
   }
 
   @override
@@ -45,100 +81,113 @@ class ReceiptItem extends StatelessWidget {
         ),
         child: Padding(
           padding: const EdgeInsets.all(12),
-          child: Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Receipt thumbnail
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey.shade300),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: const Icon(Icons.receipt, color: Color(0xFF7E5EFD)),
-              ),
-              const SizedBox(width: 12),
-
-              // Receipt details
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      receipt['merchant'] ?? 'Unknown Merchant',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
+              Row(
+                children: [
+                  // Receipt thumbnail
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey.shade300),
+                      borderRadius: BorderRadius.circular(4),
                     ),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
+                    child: const Icon(Icons.receipt, color: Color(0xFF7E5EFD)),
+                  ),
+                  const SizedBox(width: 12),
+
+                  // Receipt details
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          '\$${receipt['amount'] ?? '0.00'}',
+                          receipt['merchant'] ?? 'Unknown Merchant',
                           style: const TextStyle(
-                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
                           ),
                         ),
-                        // Show Price Breakup button if line items exist
-                        if (receipt['lineItems'] != null && (receipt['lineItems'] as List).isNotEmpty) ...[
-                          const SizedBox(width: 8),
-                          GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: () {
-                              FocusScope.of(context).unfocus();
-                              _showPriceBreakupDialog(context, receipt);
-                            },
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Text(
-                                  'Receipt Details',
-                                  style: TextStyle(
-                                    color: Color(0xFF7E5EFD),
-                                    fontSize: 8,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                const SizedBox(height: 1),
-                                Container(
-                                  height: 1,
-                                  width: 30,
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF7E5EFD),
-                                    borderRadius: BorderRadius.circular(0.5),
-                                  ),
-                                ),
-                              ],
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              '\$${receipt['amount'] ?? '0.00'}',
+                              style: const TextStyle(
+                                fontSize: 14,
+                              ),
                             ),
-                          ),
-                        ],
+                            // Show Price Breakup button if line items exist
+                            if (receipt['lineItems'] != null && (receipt['lineItems'] as List).isNotEmpty) ...[
+                              const SizedBox(width: 8),
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () {
+                                  FocusScope.of(context).unfocus();
+                                  _showPriceBreakupDialog(context, receipt);
+                                },
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Text(
+                                      'Receipt Details',
+                                      style: TextStyle(
+                                        color: Color(0xFF7E5EFD),
+                                        fontSize: 8,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 1),
+                                    Container(
+                                      height: 1,
+                                      width: 30,
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF7E5EFD),
+                                        borderRadius: BorderRadius.circular(0.5),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
                       ],
                     ),
-                  ],
-                ),
-              ),
-
-              // Category and date
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    receipt['category'] ?? 'Uncategorized',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w500,
-                      fontSize: 14,
-                    ),
                   ),
-                  Text(
-                    receipt['receiptDate'] ?? 'No date',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: Colors.grey,
-                    ),
+
+                  // Category and date
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        receipt['category'] ?? 'Uncategorized',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w500,
+                          fontSize: 14,
+                        ),
+                      ),
+                      Text(
+                        receipt['receiptDate'] ?? 'No date',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
+              // Duplicate badge if duplicates exist
+              if (_hasDuplicateInfo(receipt))
+                DuplicateReceiptBadge(
+                  duplicateReceipts: _extractDuplicateReceipts(receipt),
+                  onResolve: () {
+                    _showDuplicateDialog(context, receipt);
+                  },
+                ),
             ],
           ),
         ),

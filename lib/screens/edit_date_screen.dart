@@ -82,20 +82,13 @@ class _EditDateScreenState extends State<EditDateScreen> {
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: Center(
-                      child: Image.asset(
-                        'assets/logo.png',
-                        width: 30,
-                        height: 30,
-                        errorBuilder: (context, error, stackTrace) {
-                          return const Text(
-                            'MR',
-                            style: TextStyle(
-                              color: Color(0xFF7E5EFD),
-                              fontWeight: FontWeight.bold,
-                            ),
-                          );
-                        },
+                    child: const Center(
+                      child: Text(
+                        'MR',
+                        style: TextStyle(
+                          color: Color(0xFF7E5EFD),
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),

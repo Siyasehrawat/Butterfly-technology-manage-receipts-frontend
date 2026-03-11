@@ -16,11 +16,14 @@ import '../widgets/terms_and_conditions_dialog.dart';
 import '../widgets/social_login_buttons.dart';
 import 'complete_profile_screen.dart';
 import 'dashboard_screen.dart';
+import 'phone_complete_profile_screen.dart';
 import '../providers/feature_flags_provider.dart';
 import 'package:file_picker/file_picker.dart';
 import '../services/support_service.dart';
 import 'package:http/http.dart' as http;
 import '../services/api_service_bypass.dart';
+import '../utils/phone_formatter.dart';
+import 'dart:async';
 
 class SignUpScreen extends StatefulWidget {
   SignUpScreen({super.key});
@@ -34,8 +37,11 @@ class SignUpScreen extends StatefulWidget {
 class _SignUpScreenState extends State<SignUpScreen> {
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
+  final _phoneController = TextEditingController();
+  final _otpController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
+  final _referralCodeController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
   final AuthService _authService = AuthService();
   final ScrollController _scrollController = ScrollController();
@@ -44,6 +50,11 @@ class _SignUpScreenState extends State<SignUpScreen> {
   bool _isLoading = false;
   bool _termsAccepted = false;
   String? _errorMessage;
+  int _selectedSignupType = 0; // 0 = Email, 1 = Phone
+  bool _otpSent = false;
+  bool _isSendingOtp = false;
+  Timer? _rateLimitTimer;
+  int? _rateLimitSeconds;
 
   // Hardcoded supported countries
   final List<Country> _countries = [
@@ -67,10 +78,34 @@ class _SignUpScreenState extends State<SignUpScreen> {
   void dispose() {
     _nameController.dispose();
     _emailController.dispose();
+    _phoneController.dispose();
+    _otpController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
+    _referralCodeController.dispose();
     _scrollController.dispose();
+    _rateLimitTimer?.cancel();
     super.dispose();
+  }
+  
+  void _startRateLimitCountdown(int seconds) {
+    _rateLimitTimer?.cancel();
+    setState(() {
+      _rateLimitSeconds = seconds;
+    });
+    
+    _rateLimitTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_rateLimitSeconds != null && _rateLimitSeconds! > 0) {
+        setState(() {
+          _rateLimitSeconds = _rateLimitSeconds! - 1;
+        });
+      } else {
+        timer.cancel();
+        setState(() {
+          _rateLimitSeconds = null;
+        });
+      }
+    });
   }
 
   void _showTermsAndConditions() {
@@ -156,12 +191,101 @@ class _SignUpScreenState extends State<SignUpScreen> {
     return 'Registration failed. Please check your information and try again.';
   }
 
+  Future<void> _sendPhoneOTP() async {
+    if (_phoneController.text.trim().isEmpty) {
+      setState(() {
+        _errorMessage = 'Please enter your phone number';
+      });
+      _scrollToTop();
+      return;
+    }
+
+    // Normalize phone number to E.164 format
+    final phone = PhoneFormatter.normalizePhone(_phoneController.text.trim());
+    
+    if (!AuthService.isValidE164Phone(phone)) {
+      setState(() {
+        _errorMessage = 'Invalid phone number format. Must be in E.164 format (e.g., +1234567890)';
+      });
+      _scrollToTop();
+      return;
+    }
+
+    setState(() {
+      _isSendingOtp = true;
+      _errorMessage = null;
+      _rateLimitSeconds = null;
+    });
+
+    try {
+      final result = await _authService.sendPhoneOTP(phone: phone);
+      
+      if (result['success']) {
+        setState(() {
+          _otpSent = true;
+          _errorMessage = null;
+        });
+        // In development, show OTP if available
+        if (result['otp'] != null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('OTP sent! (Dev: ${result['otp']})'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('OTP sent successfully to your phone number'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } else {
+        // Handle rate limiting
+        if (result['retryAfter'] != null) {
+          final retryAfter = result['retryAfter'] as int;
+          _startRateLimitCountdown(retryAfter);
+          
+          String errorMsg = result['message'] ?? 'Please wait before requesting another OTP';
+          if (retryAfter >= 3600) {
+            // More than 1 hour - show hours
+            final hours = (retryAfter / 3600).ceil();
+            errorMsg = 'Daily limit reached. Please try again after $hours hour(s).';
+          }
+          
+          setState(() {
+            _errorMessage = errorMsg;
+          });
+        } else {
+          setState(() {
+            _errorMessage = result['message'] ?? 'Failed to send OTP. Please try again.';
+          });
+        }
+        _scrollToTop();
+      }
+    } catch (e) {
+      widget._logger.e('Error sending phone OTP: $e');
+      setState(() {
+        _errorMessage = 'An error occurred. Please try again.';
+      });
+      _scrollToTop();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSendingOtp = false;
+        });
+      }
+    }
+  }
+
   Future<void> _signUp() async {
     // Clear previous error
     setState(() {
       _errorMessage = null;
     });
 
+    // Email signup flow (existing validations)
     if (!_termsAccepted) {
       setState(() {
         _errorMessage = 'Please accept the Terms and Conditions to continue.';
@@ -178,6 +302,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
       return;
     }
 
+    // Email signup flow (existing)
     if (_passwordController.text != _confirmPasswordController.text) {
       setState(() {
         _errorMessage = 'Passwords do not match. Please make sure both password fields are identical.';
@@ -199,12 +324,44 @@ class _SignUpScreenState extends State<SignUpScreen> {
           password: _passwordController.text,
           country: _selectedCountry?.name ?? 'Not specified',
           termsAccepted: _termsAccepted,
+          referralCode: _referralCodeController.text.trim().isNotEmpty
+              ? _referralCodeController.text.trim()
+              : null,
         );
 
         if (result['success']) {
-          // Update user provider with data from backend response
-          final userProvider = Provider.of<UserProvider>(context, listen: false);
-          final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
+          await _handleSignupSuccess(result);
+        } else {
+          setState(() {
+            _errorMessage = _getDetailedErrorMessage(result['message'] ?? result);
+          });
+          _scrollToTop();
+        }
+      } catch (e) {
+        widget._logger.e('Sign-up error: $e');
+        setState(() {
+          _errorMessage = _getDetailedErrorMessage(e.toString());
+        });
+        _scrollToTop();
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+          });
+        }
+      }
+    } else {
+      setState(() {
+        _errorMessage = 'Please correct the highlighted fields and try again.';
+      });
+      _scrollToTop();
+    }
+  }
+
+  Future<void> _handleSignupSuccess(Map<String, dynamic> result) async {
+    // Update user provider with data from backend response
+    final userProvider = Provider.of<UserProvider>(context, listen: false);
+    final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
 
           // Debug the signup result
           print('SignUp - Full result from backend: $result');
@@ -274,31 +431,6 @@ class _SignUpScreenState extends State<SignUpScreen> {
               (route) => false,
             );
           }
-        } else {
-          setState(() {
-            _errorMessage = _getDetailedErrorMessage(result['message'] ?? result);
-          });
-          _scrollToTop();
-        }
-      } catch (e) {
-        widget._logger.e('Sign-up error: $e');
-        setState(() {
-          _errorMessage = _getDetailedErrorMessage(e.toString());
-        });
-        _scrollToTop();
-      } finally {
-        if (mounted) {
-          setState(() {
-            _isLoading = false;
-          });
-        }
-      }
-    } else {
-      setState(() {
-        _errorMessage = 'Please correct the highlighted fields and try again.';
-      });
-      _scrollToTop();
-    }
   }
 
   void _scrollToTop() {
@@ -854,7 +986,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
                                       const Text(
-                                        'SIGN UP',
+                                        'Create your account',
                                         style: TextStyle(
                                           fontSize: 24,
                                           fontWeight: FontWeight.bold,
@@ -863,7 +995,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                                       ),
                                       const SizedBox(height: 8),
                                       const Text(
-                                        'Join now and simplify your manage receipt.',
+                                        'Join now and simplify receipt management.',
                                         style: TextStyle(
                                           fontSize: 16,
                                           color: Colors.grey,
@@ -903,10 +1035,12 @@ class _SignUpScreenState extends State<SignUpScreen> {
                                           ),
                                         ),
 
+                                      // Name field
                                       TextFormField(
                                         controller: _nameController,
                                         decoration: const InputDecoration(
-                                          hintText: 'Name',
+                                          hintText: 'Full Name',
+                                          prefixIcon: Icon(Icons.person_outline, color: Color(0xFF7E5EFD)),
                                           contentPadding: EdgeInsets.symmetric(
                                             horizontal: 16,
                                             vertical: 16,
@@ -923,11 +1057,13 @@ class _SignUpScreenState extends State<SignUpScreen> {
                                         },
                                       ),
                                       const SizedBox(height: 16),
+                                      // Email field
                                       TextFormField(
                                         controller: _emailController,
                                         keyboardType: TextInputType.emailAddress,
                                         decoration: const InputDecoration(
-                                          hintText: 'Email',
+                                          hintText: 'Email Address',
+                                          prefixIcon: Icon(Icons.alternate_email, color: Color(0xFF7E5EFD)),
                                           contentPadding: EdgeInsets.symmetric(
                                             horizontal: 16,
                                             vertical: 16,
@@ -945,6 +1081,33 @@ class _SignUpScreenState extends State<SignUpScreen> {
                                         },
                                       ),
                                       const SizedBox(height: 16),
+                                      // Referral Code field (optional)
+                                      TextFormField(
+                                        controller: _referralCodeController,
+                                        textCapitalization: TextCapitalization.characters,
+                                        maxLength: 32,
+                                        decoration: const InputDecoration(
+                                          hintText: 'Referral Code (Optional)',
+                                          prefixIcon: Icon(Icons.card_giftcard_outlined, color: Color(0xFF7E5EFD)),
+                                          contentPadding: EdgeInsets.symmetric(
+                                            horizontal: 16,
+                                            vertical: 16,
+                                          ),
+                                          counterText: '', // Hide character counter
+                                        ),
+                                        inputFormatters: [
+                                          FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')), // Allow alphanumeric
+                                          TextInputFormatter.withFunction((oldValue, newValue) {
+                                            return TextEditingValue(
+                                              text: newValue.text.toUpperCase(),
+                                              selection: newValue.selection,
+                                            );
+                                          }),
+                                        ],
+                                        // No validator - this field is optional
+                                      ),
+                                      const SizedBox(height: 16),
+                                      
                                       // Country dropdown field - hardcoded countries
                                       DropdownButtonFormField<Country>(
                                         value: _selectedCountry,
@@ -974,9 +1137,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
                                           return null;
                                         },
                                       ),
-                                      const SizedBox(height: 16),
-                                      TextFormField(
-                                        controller: _passwordController,
+                                        const SizedBox(height: 16),
+                                        TextFormField(
+                                          controller: _passwordController,
                                         obscureText: _obscurePassword,
                                         decoration: InputDecoration(
                                           hintText: 'Password',
@@ -1017,9 +1180,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
                                           return null;
                                         },
                                       ),
-                                      const SizedBox(height: 16),
-                                      TextFormField(
-                                        controller: _confirmPasswordController,
+                                        const SizedBox(height: 16),
+                                        TextFormField(
+                                          controller: _confirmPasswordController,
                                         obscureText: _obscureConfirmPassword,
                                         decoration: InputDecoration(
                                           hintText: 'Confirm Password',
@@ -1051,6 +1214,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                                           return null;
                                         },
                                       ),
+                                        const SizedBox(height: 8),
                                       const SizedBox(height: 8),
                                       const Text(
                                         'Password must be at least 8 characters with one capital letter and one special character and one digit',
@@ -1109,7 +1273,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                                         child: _isLoading
                                             ? const CircularProgressIndicator(color: Colors.white)
                                             : const Text(
-                                          'Join Now',
+                                          'Create Account',
                                           style: TextStyle(
                                             fontWeight: FontWeight.bold,
                                           ),

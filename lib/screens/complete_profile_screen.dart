@@ -250,7 +250,6 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
                   dropdownMenuEntries: const [
                     DropdownMenuEntry(value: 'India', label: 'India'),
                     DropdownMenuEntry(value: 'United States', label: 'United States'),
-                    DropdownMenuEntry(value: 'Serbia', label: 'Serbia'),
                   ],
                   menuHeight: 200,
                   hintText: 'Choose your country',

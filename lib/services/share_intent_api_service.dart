@@ -154,6 +154,12 @@ class ShareIntentApiService {
         
         final saveResponse = SaveReceiptResponse.fromJson(response.data);
         print('🔍 Parsed save response - success: ${saveResponse.success}, receiptId: ${saveResponse.receiptId}, message: ${saveResponse.message}');
+        
+        // Log duplicate information if present
+        if (saveResponse.hasDuplicates) {
+          print('⚠️ Duplicate receipt detected: ${saveResponse.duplicateReceipts?.length ?? 0} duplicate(s) found');
+        }
+        
         return saveResponse;
       } else {
         print('ShareIntentApiService: Save endpoint error ${response.statusCode} -> ${response.data}');

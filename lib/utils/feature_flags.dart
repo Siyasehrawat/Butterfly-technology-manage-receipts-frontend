@@ -11,6 +11,7 @@ class FeatureFlags {
   final bool expenseReportsEnabled; // maps to config.expenseReportsEnabled
   final bool customReportsEnabled; // maps to config.customReportsEnabled
   final bool emailReceiptsEnabled; // maps to config.emailReceiptsEnabled
+  final bool mrBucksEnabled; // maps to config.mrBucksEnabled
 
   const FeatureFlags({
     this.walletEnabled = false,
@@ -25,6 +26,7 @@ class FeatureFlags {
     this.expenseReportsEnabled = true,
     this.customReportsEnabled = true,
     this.emailReceiptsEnabled = true,
+    this.mrBucksEnabled = true,
   });
 
   factory FeatureFlags.fromJson(Map<String, dynamic> json) {
@@ -92,6 +94,10 @@ class FeatureFlags {
         config['emailReceiptsEnabled'],
         defaultValue: true,
       ),
+      mrBucksEnabled: readBool(
+        config['mrBucksEnabled'],
+        defaultValue: true,
+      ),
     );
   }
 
@@ -109,11 +115,12 @@ class FeatureFlags {
       'expenseReportsEnabled': expenseReportsEnabled,
       'customReportsEnabled': customReportsEnabled,
       'emailReceiptsEnabled': emailReceiptsEnabled,
+      'mrBucksEnabled': mrBucksEnabled,
     };
   }
 
   @override
   String toString() {
-    return 'FeatureFlags(walletEnabled: $walletEnabled, docWalletPinRequired: $docWalletPinRequired, taxReportsEnabled: $taxReportsEnabled, splitBillEnabled: $splitBillEnabled, remindersEnabled: $remindersEnabled, googleAuthEnabled: $googleAuthEnabled, appleAuthEnabled: $appleAuthEnabled, calendarSyncEnabled: $calendarSyncEnabled, analyticsEnabled: $analyticsEnabled, expenseReportsEnabled: $expenseReportsEnabled, customReportsEnabled: $customReportsEnabled, emailReceiptsEnabled: $emailReceiptsEnabled)';
+    return 'FeatureFlags(walletEnabled: $walletEnabled, docWalletPinRequired: $docWalletPinRequired, taxReportsEnabled: $taxReportsEnabled, splitBillEnabled: $splitBillEnabled, remindersEnabled: $remindersEnabled, googleAuthEnabled: $googleAuthEnabled, appleAuthEnabled: $appleAuthEnabled, calendarSyncEnabled: $calendarSyncEnabled, analyticsEnabled: $analyticsEnabled, expenseReportsEnabled: $expenseReportsEnabled, customReportsEnabled: $customReportsEnabled, emailReceiptsEnabled: $emailReceiptsEnabled, mrBucksEnabled: $mrBucksEnabled)';
   }
 }

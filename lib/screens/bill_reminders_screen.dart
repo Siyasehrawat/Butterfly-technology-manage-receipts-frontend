@@ -2,12 +2,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import '../providers/user_provider.dart';
 import '../services/bill_reminder_service.dart';
 import '../services/api_service_bypass.dart';
 import '../services/calendar_sync_service.dart';
 import '../widgets/reminder_dialog.dart';
 import '../utils/reminder_settings.dart';
+import '../utils/payment_helper.dart';
 import 'dart:convert';
 
 class BillRemindersScreen extends StatefulWidget {
@@ -23,6 +25,9 @@ class _BillRemindersScreenState extends State<BillRemindersScreen> {
   double _thisMonthAmount = 0.0;
   bool _showDisabled = true;
   bool _calendarConnected = false;
+  bool _loadingPaymentCatalog = false;
+  List<Map<String, dynamic>> _paymentCatalog = [];
+  String? _modalError;
 
   @override
   void initState() {
@@ -44,12 +49,16 @@ class _BillRemindersScreenState extends State<BillRemindersScreen> {
       token: user.token,
     );
     
-    // Fetch reminders using the new API endpoint
+    // Fetch reminders using the new API endpoint with pagination
     List<Map<String, dynamic>> items = [];
     try {
       final response = await ApiService.get(
-        '/reminder/user/${user.userId}',
+        '/reminders/${user.userId}',
         token: user.token,
+        queryParameters: {
+          'page': '1',
+          'limit': '50', // Default limit, can be increased up to 100
+        },
       );
       
       if (response.statusCode == 200) {
@@ -65,6 +74,11 @@ class _BillRemindersScreenState extends State<BillRemindersScreen> {
         items = allReminders.map((e) => Map<String, dynamic>.from(e)).toList();
         
         debugPrint('📋 Loaded ${activeReminders.length} active and ${inactiveReminders.length} inactive reminders');
+        
+        // Note: Pagination metadata is available in data['pagination'] if needed for future pagination UI
+        if (data['pagination'] != null) {
+          debugPrint('📋 Pagination: ${data['pagination']}');
+        }
       }
     } catch (e) {
       debugPrint('Error fetching reminders: $e');
@@ -227,48 +241,74 @@ class _BillRemindersScreenState extends State<BillRemindersScreen> {
                   ),
                   const SizedBox(height: 6),
                   
-                  // Add Manual pill button
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: TextButton.icon(
-                      onPressed: () => _openReminderForm(),
-                      icon: const Icon(Icons.add, size: 18, color: Colors.white),
-                      label: const Text(
-                        'New Bill Reminder',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white,
+                  // Add Manual pill button and Pay Your Bill button
+                  Row(
+                    mainAxisSize: MainAxisSize.max,
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () => _openReminderForm(),
+                          icon: const Icon(Icons.add, size: 18, color: Colors.white),
+                          label: const Text(
+                            'New Bill Reminder',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF7E5EFD),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                          ),
                         ),
                       ),
-                      style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
-                        backgroundColor: const Color(0xFF7E5EFD),
-                        foregroundColor: Colors.white,
-                        minimumSize: const Size(0, 0),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(20),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () => _showPayYourBillModal(),
+                          icon: const Icon(Icons.receipt, size: 18, color: Colors.white),
+                          label: const Text(
+                            'Pay Your Bill',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF7E5EFD),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                          ),
                         ),
-                        shadowColor: Colors.transparent,
                       ),
-                    ),
+                    ],
                   ),
                   const SizedBox(height: 16),
 
                   // Reminders List
                   ..._reminders
                       .where((r) => _showDisabled || ((r['isEnabled'] as bool?) ?? true))
-                      .map((r) => _ReminderCard(
+                      .map((r) {
+                        final userProvider = Provider.of<UserProvider>(context, listen: false);
+                        final currencySymbol = userProvider.effectiveCurrencySymbol;
+                        return _ReminderCard(
                             title: _getReminderTitle(r),
-                              subtitle: _composeSubtitle(r),
+                              subtitle: _composeSubtitle(r, currencySymbol),
                             amountDisplay: _getReminderAmount(r),
                             enabled: (r['isEnabled'] as bool?) ?? true,
                             status: ((r['isEnabled'] as bool?) ?? true) ? 'Active' : 'Disabled',
                             tags: [],
                               onEdit: () => _openEditForm(r),
                             onDelete: () => _delete((r['id'] ?? '').toString()),
-                            )),
+                            );
+                      }).toList(),
 
                   // Empty State
                   if (_reminders.where((r) => _showDisabled || ((r['isEnabled'] as bool?) ?? true)).isEmpty)
@@ -443,10 +483,12 @@ class _BillRemindersScreenState extends State<BillRemindersScreen> {
                     itemCount: snapshot.data!.length,
                     itemBuilder: (context, index) {
                       final receipt = snapshot.data![index];
+                      final userProvider = Provider.of<UserProvider>(context, listen: false);
+                      final currencySymbol = userProvider.effectiveCurrencySymbol;
                       return Card(
                         child: ListTile(
                           title: Text(receipt['merchant'] ?? 'Unknown'),
-                          subtitle: Text('₹${receipt['amount'] ?? '0'}'),
+                          subtitle: Text('$currencySymbol${receipt['amount'] ?? '0'}'),
                           trailing: ElevatedButton(
                             onPressed: () {
                               Navigator.pop(context);
@@ -545,6 +587,508 @@ class _BillRemindersScreenState extends State<BillRemindersScreen> {
         );
       }
     }
+  }
+
+  IconData _getPaymentIcon(String paymentType) {
+    final type = paymentType.toLowerCase();
+    if (type.contains('google') || type.contains('gpay')) {
+      return Icons.contactless_outlined;
+    } else if (type.contains('paytm')) {
+      return Icons.phone_iphone;
+    } else if (type.contains('upi')) {
+      return Icons.account_balance;
+    } else if (type.contains('paypal')) {
+      return Icons.account_balance_wallet_outlined;
+    } else if (type.contains('zelle')) {
+      return Icons.payments;
+    } else if (type.contains('stripe')) {
+      return Icons.credit_card;
+    }
+    return Icons.payment;
+  }
+
+  Future<void> _fetchPaymentCatalogForModal(Function setModalState, [Function? updateError]) async {
+    setModalState(() {
+      _loadingPaymentCatalog = true;
+    });
+    try {
+      final userProvider = Provider.of<UserProvider>(context, listen: false);
+      final userId = userProvider.userId;
+      final token = userProvider.token;
+      
+      if (userId == null || userId.isEmpty) {
+        debugPrint('Error: User ID is missing for fetching payment catalog.');
+        setModalState(() {
+          _loadingPaymentCatalog = false;
+        });
+        return;
+      }
+
+      final endpoint = '/payments/catalog/$userId';
+      debugPrint('Fetching payment catalog from: $endpoint');
+
+      final response = await ApiService.get(endpoint, token: token);
+
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+        List<Map<String, dynamic>> catalog = [];
+        
+        // Handle new API response structure: { success: true, data: { recommendedPartners: [...] } }
+        if (responseData is Map && responseData.containsKey('data')) {
+          final data = Map<String, dynamic>.from(responseData['data'] as Map);
+          // First try recommendedPartners
+          if (data.containsKey('recommendedPartners') && data['recommendedPartners'] is List) {
+            final partners = data['recommendedPartners'] as List;
+            catalog = List<Map<String, dynamic>>.from(
+              partners.map((item) => Map<String, dynamic>.from(item as Map)),
+            );
+          }
+          // If no recommendedPartners, try catalog based on userCountry
+          else if (data.containsKey('userCountry') && data.containsKey('catalog')) {
+            final catalogData = data['catalog'] as Map<String, dynamic>;
+            final userCountry = (data['userCountry'] ?? '').toString().toLowerCase();
+            
+            // Map country names to catalog keys
+            String catalogKey = 'india'; // default
+            if (userCountry.contains('united states') || userCountry.contains('usa') || userCountry.contains('us')) {
+              catalogKey = 'unitedStates';
+            } else if (userCountry.contains('india') || userCountry.contains('in')) {
+              catalogKey = 'india';
+            }
+            
+            if (catalogData.containsKey(catalogKey) && catalogData[catalogKey] is List) {
+              final countryCatalog = catalogData[catalogKey] as List;
+              catalog = List<Map<String, dynamic>>.from(
+                countryCatalog.map((item) => Map<String, dynamic>.from(item as Map)),
+              );
+            }
+          }
+        } else if (responseData is List) {
+          catalog = List<Map<String, dynamic>>.from(
+            responseData.map((item) => Map<String, dynamic>.from(item as Map)),
+          );
+        } else if (responseData is Map && responseData.containsKey('catalog')) {
+          final catalogData = responseData['catalog'];
+          if (catalogData is List) {
+            catalog = List<Map<String, dynamic>>.from(
+              catalogData.map((item) => Map<String, dynamic>.from(item as Map)),
+            );
+          }
+        } else if (responseData is Map) {
+          // If the response is a single object, convert to list
+          catalog = [Map<String, dynamic>.from(responseData)];
+        }
+        
+        setModalState(() {
+          _paymentCatalog = catalog;
+          _loadingPaymentCatalog = false;
+        });
+        debugPrint('Successfully fetched payment catalog: ${catalog.length} options');
+      } else {
+        final errorBody = json.decode(response.body);
+        final errorMessage = errorBody['message'] ?? 'Failed to load payment catalog';
+        debugPrint('Failed to load payment catalog: ${response.statusCode} - $errorMessage');
+        setModalState(() {
+          _loadingPaymentCatalog = false;
+          if (updateError != null) {
+            updateError('Failed to load payment options. Please try again.');
+          } else {
+            _modalError = 'Failed to load payment options. Please try again.';
+          }
+        });
+      }
+    } catch (e) {
+      debugPrint('Error fetching payment catalog: $e');
+      setModalState(() {
+        _loadingPaymentCatalog = false;
+        if (updateError != null) {
+          updateError('Error loading payment options. Please try again.');
+        } else {
+          _modalError = 'Error loading payment options. Please try again.';
+        }
+      });
+    }
+  }
+
+  Widget _buildLogoWidget(String logoUrl, IconData fallbackIcon) {
+    final isSvg = logoUrl.toLowerCase().endsWith('.svg');
+    
+    if (isSvg) {
+      return SvgPicture.network(
+        logoUrl,
+        fit: BoxFit.contain,
+        placeholderBuilder: (context) => const Center(
+          child: SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF7E5EFD)),
+            ),
+          ),
+        ),
+        semanticsLabel: 'Payment logo',
+        height: 40,
+        width: 40,
+      );
+    } else {
+      return Image.network(
+        logoUrl,
+        fit: BoxFit.contain,
+        errorBuilder: (context, error, stackTrace) {
+          debugPrint('Error loading logo: $error');
+          return Icon(
+            fallbackIcon,
+            color: const Color(0xFF7E5EFD),
+            size: 28,
+          );
+        },
+        loadingBuilder: (context, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          return const Center(
+            child: SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF7E5EFD)),
+              ),
+            ),
+          );
+        },
+      );
+    }
+  }
+
+  // Legacy URL-scheme launcher removed in favor of backend-provided deep links.
+
+  void _showPayYourBillModal() {
+    // Reset payment catalog state when opening modal
+    setState(() {
+      _paymentCatalog = [];
+      _loadingPaymentCatalog = false;
+      _modalError = null;
+    });
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            // Local error state for the modal - sync with class variable
+            String? modalError = _modalError;
+            
+            // Function to update error state
+            void updateError(String? error) {
+              setModalState(() {
+                _modalError = error;
+                modalError = error;
+              });
+            }
+            
+            // Fetch payment catalog when modal opens (only once)
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!_loadingPaymentCatalog && _paymentCatalog.isEmpty) {
+                setModalState(() {
+                  _loadingPaymentCatalog = true;
+                });
+                _fetchPaymentCatalogForModal(setModalState, updateError);
+              }
+            });
+            
+            // Build payment options from catalog or use fallback
+            final paymentOptions = _paymentCatalog.isEmpty
+                ? [
+                    // Fallback options if API returns empty
+                    {
+                      'icon': Icons.contactless_outlined,
+                      'title': 'Google Pay',
+                      'subtitle': 'G Pay',
+                      'type': 'google_pay',
+                      'logoUrl': '',
+                    },
+                    {
+                      'icon': Icons.phone_iphone,
+                      'title': 'Paytm',
+                      'subtitle': 'Paytm',
+                      'type': 'paytm',
+                      'logoUrl': '',
+                    },
+                    {
+                      'icon': Icons.account_balance,
+                      'title': 'UPI',
+                      'subtitle': 'UPI',
+                      'type': 'upi',
+                      'logoUrl': '',
+                    },
+                    {
+                      'icon': Icons.account_balance_wallet_outlined,
+                      'title': 'PayPal',
+                      'subtitle': 'PayPal',
+                      'type': 'paypal',
+                      'logoUrl': '',
+                    },
+                    {
+                      'icon': Icons.payments,
+                      'title': 'Zelle',
+                      'subtitle': 'Zelle',
+                      'type': 'zelle',
+                      'logoUrl': '',
+                    },
+                    {
+                      'icon': Icons.credit_card,
+                      'title': 'Stripe',
+                      'subtitle': 'Stripe',
+                      'type': 'stripe',
+                      'logoUrl': '',
+                    },
+                  ]
+                : _paymentCatalog.map((item) {
+                    final id = (item['id'] ?? '').toString();
+                    final type = (item['type'] ?? 'WALLET').toString();
+                    final name = (item['name'] ?? '').toString();
+                    final logoUrl = (item['logo'] ?? '').toString();
+                    
+                    debugPrint('Payment option: $name (ID: $id), Logo URL: $logoUrl');
+                    
+                    return {
+                      'icon': _getPaymentIcon(id.isNotEmpty ? id : name),
+                      'title': name,
+                      'subtitle': item['description']?.toString() ?? '',
+                      'type': type,
+                      'logoUrl': logoUrl,
+                      'data': item,
+                    };
+                  }).toList();
+            
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  padding: const EdgeInsets.all(16),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Pay Your Bill',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF7E5EFD),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close),
+                            onPressed: () => Navigator.pop(ctx),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      _loadingPaymentCatalog
+                          ? const Padding(
+                              padding: EdgeInsets.all(40),
+                              child: Center(
+                                child: CircularProgressIndicator(
+                                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF7E5EFD)),
+                                ),
+                              ),
+                            )
+                          : paymentOptions.isEmpty
+                              ? const Padding(
+                                  padding: EdgeInsets.all(20),
+                                  child: Text(
+                                    'No payment options available',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.black54,
+                                    ),
+                                  ),
+                                )
+                              : GridView.builder(
+                                  shrinkWrap: true,
+                                  physics: const NeverScrollableScrollPhysics(),
+                                  itemCount: paymentOptions.length,
+                                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 3,
+                                    crossAxisSpacing: 12,
+                                    mainAxisSpacing: 12,
+                                    childAspectRatio: 1.0,
+                                  ),
+                                  itemBuilder: (context, index) {
+                                    final option = paymentOptions[index];
+                                    final logoUrl = option['logoUrl'] as String?;
+                                    final hasLogo = logoUrl != null && logoUrl.isNotEmpty;
+                                    final data = option['data'] as Map<String, dynamic>?;
+                                    final paymentName = (option['title'] ?? '').toString();
+                                    final redirectUrl = (data?['redirectUrl'] ?? '').toString();
+                                    final deepLink = (data?['deepLink'] ?? '').toString(); // Get deepLink from catalog (iOS/Android)
+                                    final webUrl = (data?['webUrl'] ?? '').toString(); // Get webUrl from catalog (fallback)
+                                    
+                                    // Debug: Verify data is extracted from catalog response
+                                    debugPrint('💳 Payment option: $paymentName');
+                                    debugPrint('🔗 redirectUrl from catalog: $redirectUrl');
+                                    debugPrint('🔗 deepLink from catalog: $deepLink');
+                                    debugPrint('🌐 webUrl from catalog: $webUrl');
+                                    if (data != null) {
+                                      debugPrint('📦 Full payment data: $data');
+                                    }
+                                    
+                                    return Material(
+                                      color: Colors.transparent,
+                                      child: InkWell(
+                                        onTap: () async {
+                                          // Clear previous errors
+                                          updateError(null);
+
+                                          if (redirectUrl.isEmpty) {
+                                            debugPrint('❌ redirectUrl is empty for $paymentName');
+                                            updateError('$paymentName is not available on this platform');
+                                            return;
+                                          }
+
+                                          debugPrint('👆 User clicked $paymentName');
+                                          debugPrint('🔗 Using redirectUrl: $redirectUrl');
+
+                                          // Show loading indicator
+                                          showDialog(
+                                            context: context,
+                                            barrierDismissible: false,
+                                            builder: (context) => const Center(
+                                              child: CircularProgressIndicator(
+                                                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF7E5EFD)),
+                                              ),
+                                            ),
+                                          );
+
+                                          // Get token from UserProvider
+                                          final userProvider = Provider.of<UserProvider>(context, listen: false);
+                                          
+                                          // Use redirectUrl, deepLink (if available), and webUrl (as fallback) to open app
+                                          final result = await PaymentHelper.openPaymentAppFromRedirectUrl(
+                                            redirectUrl,
+                                            userProvider.token,
+                                            deepLink: deepLink.isNotEmpty ? deepLink : null,
+                                            webUrl: webUrl.isNotEmpty ? webUrl : null,
+                                          );
+
+                                          // Hide loading indicator
+                                          if (context.mounted) {
+                                            Navigator.pop(context);
+                                          }
+
+                                          // Show appropriate error based on result
+                                          if (result != PaymentHelper.resultSuccess && context.mounted) {
+                                            if (result == PaymentHelper.resultBackendError) {
+                                              PaymentHelper.showBackendErrorDialog(
+                                                context: context,
+                                                appName: paymentName,
+                                                errorMessage: 'Payment service is temporarily unavailable. Please try again later.',
+                                              );
+                                            } else if (result == PaymentHelper.resultAppNotInstalled) {
+                                              PaymentHelper.showAppNotInstalledDialog(
+                                                context: context,
+                                                appName: paymentName,
+                                              );
+                                            } else {
+                                              // No deep link or other error
+                                              updateError('Unable to open $paymentName. Please try again.');
+                                            }
+                                          }
+                                        },
+                                        borderRadius: BorderRadius.circular(12),
+                                        child: Container(
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFF6F5FF),
+                                            borderRadius: BorderRadius.circular(12),
+                                            border: Border.all(color: const Color(0xFFE0DBFF)),
+                                          ),
+                                          padding: const EdgeInsets.all(8),
+                                        child: Column(
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            SizedBox(
+                                              height: 40,
+                                              width: 40,
+                                              child: hasLogo
+                                                  ? _buildLogoWidget(logoUrl!, option['icon'] as IconData)
+                                                  : Icon(
+                                                      option['icon'] as IconData,
+                                                      color: const Color(0xFF7E5EFD),
+                                                      size: 28,
+                                                    ),
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Flexible(
+                                              child: Text(
+                                                option['title'] as String,
+                                                textAlign: TextAlign.center,
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: Colors.black87,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                      // Error message display
+                      if (modalError != null) ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.red.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.red.shade200),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.error_outline, color: Colors.red.shade700, size: 20),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  modalError!,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: Colors.red.shade700,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   void _openEditForm(Map<String, dynamic> reminder) async {
@@ -673,16 +1217,19 @@ class _BillRemindersScreenState extends State<BillRemindersScreen> {
   }
 
   String _getReminderAmount(Map<String, dynamic> reminder) {
+    final userProvider = Provider.of<UserProvider>(context, listen: false);
+    final currencySymbol = userProvider.effectiveCurrencySymbol;
+    
     final receipt = reminder['receipt'] as Map<String, dynamic>?;
     if (receipt != null) {
-      return receipt['amount']?.toString() ?? '₹0.00';
+      return receipt['amount']?.toString() ?? '$currencySymbol 0.00';
     }
     final amount = reminder['amount'];
-    if (amount == null) return '₹0.00';
+    if (amount == null) return '$currencySymbol 0.00';
     final cleaned = amount.toString().replaceAll(RegExp(r'[^0-9.]'), '');
     final num? n = (amount is num) ? amount : num.tryParse(cleaned);
     if (n == null) return amount.toString();
-    return '₹${n.toStringAsFixed(2)}';
+    return '$currencySymbol${n.toStringAsFixed(2)}';
   }
 
   List<String> _getReminderTags(Map<String, dynamic> reminder) {
@@ -883,23 +1430,22 @@ class _MetricCard extends StatelessWidget {
   }
 }
 
-String _formatAmount(dynamic amount) {
+String _formatAmount(dynamic amount, String currencySymbol) {
   if (amount == null) return '';
   final cleaned = amount.toString().replaceAll(RegExp(r'[^0-9.]'), '');
   final num? n = (amount is num) ? amount : num.tryParse(cleaned);
   if (n == null) return amount.toString();
-  final formatter = NumberFormat.currency(locale: 'en_IN', symbol: '₹ ', decimalDigits: 2);
-  return formatter.format(n);
+  return '$currencySymbol${n.toStringAsFixed(2)}';
 }
 
-String _composeSubtitle(Map<String, dynamic> r) {
+String _composeSubtitle(Map<String, dynamic> r, String currencySymbol) {
   final date = _formatDateForDisplay(r['reminderDate']?.toString() ?? '');
   final receipt = r['receipt'] as Map<String, dynamic>?;
   // For receipt-based reminders, read from receipt; for manual, use reminder fields
   final dynamic amountSource = receipt != null
       ? (receipt['originalAmount'] ?? receipt['amount'])
       : (r['amount']);
-  final amt = _formatAmount(amountSource);
+  final amt = _formatAmount(amountSource, currencySymbol);
   final category = ((receipt != null
           ? receipt['category']?.toString()
           : r['billType']?.toString())
@@ -954,6 +1500,7 @@ class _ReminderFormState extends State<_ReminderForm> {
   final _titleController = TextEditingController();
   final _amountController = TextEditingController();
   final _notesController = TextEditingController();
+  final FocusNode _amountFocusNode = FocusNode();
   
   String _category = 'Utilities';
   String _schedule = 'Custom Date';
@@ -1013,10 +1560,16 @@ class _ReminderFormState extends State<_ReminderForm> {
   }
 
   @override
+  void dispose() {
+    _amountFocusNode.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Form(
-      key: _formKey,
-      child: Column(
+        key: _formKey,
+        child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           // Header
@@ -1058,7 +1611,13 @@ class _ReminderFormState extends State<_ReminderForm> {
                   ),
                   const SizedBox(height: 4),
                   Text('Merchant: ${widget.prefill!['merchant'] ?? 'Unknown'}'),
-                  Text('Amount: ₹${widget.prefill!['amount'] ?? '0'}'),
+                  Builder(
+                    builder: (context) {
+                      final userProvider = Provider.of<UserProvider>(context, listen: false);
+                      final currencySymbol = userProvider.effectiveCurrencySymbol;
+                      return Text('Amount: $currencySymbol${widget.prefill!['amount'] ?? '0'}');
+                    },
+                  ),
                   Text('Date: ${widget.prefill!['receiptDate'] ?? 'Unknown'}'),
                 ],
               ),
@@ -1285,27 +1844,40 @@ class _ReminderFormState extends State<_ReminderForm> {
                                 ),
                                 child: SizedBox(
                                   height: 36,
-                                  child: TextFormField(
-                                    controller: _amountController,
-                                    textAlignVertical: TextAlignVertical.center,
-                                    decoration: const InputDecoration(
-                                      border: InputBorder.none,
-                                      enabledBorder: InputBorder.none,
-                                      focusedBorder: InputBorder.none,
-                                      disabledBorder: InputBorder.none,
-                                      prefixText: '₹ ',
-                                      isDense: true,
-                                      contentPadding: EdgeInsets.symmetric(vertical: 10),
-                                      filled: true,
-                                      fillColor: Colors.transparent,
-                                    ),
-                                    style: const TextStyle(fontSize: 12),
-                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                                    validator: (value) {
-                                      if (value == null || value.isEmpty) {
-                                        return 'Please enter an amount';
-                                      }
-                                      return null;
+                                  child: Builder(
+                                    builder: (context) {
+                                      final userProvider = Provider.of<UserProvider>(context, listen: false);
+                                      final currencySymbol = userProvider.effectiveCurrencySymbol;
+                                      return TextFormField(
+                                        controller: _amountController,
+                                        focusNode: _amountFocusNode,
+                                        textAlignVertical: TextAlignVertical.center,
+                                        decoration: InputDecoration(
+                                          border: InputBorder.none,
+                                          enabledBorder: InputBorder.none,
+                                          focusedBorder: InputBorder.none,
+                                          disabledBorder: InputBorder.none,
+                                          prefixText: '$currencySymbol ',
+                                          isDense: true,
+                                          contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                                          filled: true,
+                                          fillColor: Colors.transparent,
+                                        ),
+                                        style: const TextStyle(fontSize: 12),
+                                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                        onTap: () {
+                                          // Only request focus when user explicitly taps
+                                          if (!_amountFocusNode.hasFocus) {
+                                            _amountFocusNode.requestFocus();
+                                          }
+                                        },
+                                        validator: (value) {
+                                          if (value == null || value.isEmpty) {
+                                            return 'Please enter an amount';
+                                          }
+                                          return null;
+                                        },
+                                      );
                                     },
                                   ),
                                 ),

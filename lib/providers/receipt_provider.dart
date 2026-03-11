@@ -200,8 +200,10 @@ class ReceiptProvider with ChangeNotifier {
     notifyListeners();
 
     try {
+      XFile? pickedFile;
+
       final picker = ImagePicker();
-      final pickedFile = await picker.pickImage(source: source);
+      pickedFile = await picker.pickImage(source: source);
 
       if (pickedFile == null) {
         _isLoading = false;

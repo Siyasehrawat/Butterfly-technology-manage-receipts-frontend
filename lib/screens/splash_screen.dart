@@ -211,21 +211,14 @@ class _SplashScreenState extends State<SplashScreen>
                         ),
                       ],
                     ),
-                    child: Center(
-                      child: Image.asset(
-                        'assets/logo.png',
-                        width: 80,
-                        height: 80,
-                        errorBuilder: (context, error, stackTrace) {
-                          return const Text(
-                            'MR',
-                            style: TextStyle(
-                              color: Color(0xFF7E5EFD),
-                              fontSize: 32,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          );
-                        },
+                    child: const Center(
+                      child: Text(
+                        'MR',
+                        style: TextStyle(
+                          color: Color(0xFF7E5EFD),
+                          fontSize: 32,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),

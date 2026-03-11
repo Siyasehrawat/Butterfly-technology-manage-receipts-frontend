@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 // Providers
 import 'providers/setting_provider.dart';
@@ -47,6 +48,18 @@ import 'screens/bill_reminders_screen.dart';
 import 'screens/more_options_screen.dart';
 import 'screens/mr_bucks_screen.dart';
 import 'screens/mr_bucks_admin_screen.dart';
+import 'screens/tax_calculator_screen.dart';
+import 'screens/track_distance_screen.dart';
+import 'utils/country_utils.dart';
+import 'web/app/web_settings.dart';
+import 'web/app/web_mr_bucks.dart';
+import 'screens/workspace_dashboard_screen.dart';
+import 'screens/workspace_intro_screen.dart';
+import 'screens/workspace_onboarding_screen.dart';
+import 'screens/manage_team_members_screen.dart';
+import 'screens/pending_approvals_screen.dart';
+import 'screens/workspace_analytics_screen.dart';
+import 'screens/workspaces_list_screen.dart';
 // import 'screens/refer_earn_screen.dart'; // Handled via direct navigation
 
 // Global navigator key
@@ -260,18 +273,18 @@ class _MyAppState extends State<MyApp> {
                 ),
               ),
               dividerColor: Colors.grey[300],
-              textTheme: const TextTheme(
-                bodyLarge: TextStyle(color: Colors.black87),
-                bodyMedium: TextStyle(color: Colors.black87),
-                titleLarge: TextStyle(
+              textTheme: GoogleFonts.notoSansTextTheme().copyWith(
+                bodyLarge: const TextStyle(color: Colors.black87),
+                bodyMedium: const TextStyle(color: Colors.black87),
+                titleLarge: const TextStyle(
                   color: Colors.black,
                   fontWeight: FontWeight.bold,
                 ),
-                titleMedium: TextStyle(
+                titleMedium: const TextStyle(
                   color: Colors.black,
                   fontWeight: FontWeight.w600,
                 ),
-                titleSmall: TextStyle(
+                titleSmall: const TextStyle(
                   color: Colors.black,
                   fontWeight: FontWeight.w500,
                 ),
@@ -293,134 +306,307 @@ class _MyAppState extends State<MyApp> {
             ),
             themeMode: ThemeMode.light,
             initialRoute: '/',
-            routes: {
-              '/': (context) => const SplashScreen(),
-              '/welcome': (context) => const WelcomeScreen(),
-              '/sign_in': (context) => SignInScreen(),
-              '/sign_up': (context) => SignUpScreen(),
-              '/forgot_password': (context) => ForgotPasswordScreen(),
-              '/reset_password': (context) {
-                final userProvider = Provider.of<UserProvider>(
-                  context,
-                  listen: false,
-                );
-                return ResetPasswordScreen(
-                  email: userProvider.email ?? '',
-                  otp: userProvider.otp ?? '',
-                );
-              },
-              '/profile': (context) {
-                final userProvider = Provider.of<UserProvider>(
-                  context,
-                  listen: false,
-                );
-                return ProfileScreen(
-                  userId: userProvider.userId ?? '',
-                  token: userProvider.token ?? '',
-                );
-              },
-              '/complete-profile': (context) {
-                return CompleteProfileScreen(
-                  navigateToAfterSave: (ctx) {
+            // Remove page transition animation - instant transition
+            onGenerateRoute: (RouteSettings settings) {
+              WidgetBuilder builder;
+              
+              // Map routes to their builders
+              switch (settings.name) {
+                case '/':
+                  builder = (context) => const SplashScreen();
+                  break;
+                case '/welcome':
+                  builder = (context) => const WelcomeScreen();
+                  break;
+                case '/sign_in':
+                  builder = (context) => SignInScreen();
+                  break;
+                case '/sign_up':
+                  builder = (context) => SignUpScreen();
+                  break;
+                case '/forgot_password':
+                  builder = (context) => ForgotPasswordScreen();
+                  break;
+                case '/reset_password':
+                  builder = (context) {
                     final userProvider = Provider.of<UserProvider>(
-                      ctx,
+                      context,
+                      listen: false,
+                    );
+                    return ResetPasswordScreen(
+                      emailOrPhone: userProvider.email ?? '',
+                      otp: userProvider.otp ?? '',
+                    );
+                  };
+                  break;
+                case '/profile':
+                  builder = (context) {
+                    final userProvider = Provider.of<UserProvider>(
+                      context,
+                      listen: false,
+                    );
+                    return ProfileScreen(
+                      userId: userProvider.userId ?? '',
+                      token: userProvider.token ?? '',
+                    );
+                  };
+                  break;
+                case '/complete-profile':
+                  builder = (context) {
+                    return CompleteProfileScreen(
+                      navigateToAfterSave: (ctx) {
+                        final userProvider = Provider.of<UserProvider>(
+                          ctx,
+                          listen: false,
+                        );
+                        return DashboardScreen(
+                          userId: userProvider.userId ?? '',
+                          token: userProvider.token ?? '',
+                        );
+                      },
+                    );
+                  };
+                  break;
+                case '/settings':
+                  builder = (context) {
+                    final userProvider = Provider.of<UserProvider>(context, listen: false);
+                    if (kIsWeb) {
+                      return WebSettingsScreen(
+                        userId: userProvider.userId ?? '',
+                        token: userProvider.token ?? '',
+                      );
+                    } else {
+                      return const SettingsScreen();
+                    }
+                  };
+                  break;
+                case '/update_password':
+                  builder = (context) {
+                    final userId = Provider.of<UserProvider>(
+                      context,
+                      listen: false,
+                    ).userId;
+                    return UpdatePasswordScreen(userId: userId ?? '');
+                  };
+                  break;
+                case '/reports':
+                  builder = (context) => const ReportsHomeScreen();
+                  break;
+                case '/filters':
+                  builder = (context) => const FiltersScreen();
+                  break;
+                case '/dashboard':
+                  builder = (context) {
+                    final userProvider = Provider.of<UserProvider>(
+                      context,
                       listen: false,
                     );
                     return DashboardScreen(
                       userId: userProvider.userId ?? '',
                       token: userProvider.token ?? '',
                     );
-                  },
-                );
-              },
-              '/settings': (context) => const SettingsScreen(),
-              '/update_password': (context) {
-                final userId = Provider.of<UserProvider>(
-                  context,
-                  listen: false,
-                ).userId;
-                return UpdatePasswordScreen(userId: userId ?? '');
-              },
-              '/reports': (context) => const ReportsHomeScreen(),
-              '/filters': (context) => const FiltersScreen(),
-              '/dashboard': (context) {
-                final userProvider = Provider.of<UserProvider>(
-                  context,
-                  listen: false,
-                );
-                return DashboardScreen(
-                  userId: userProvider.userId ?? '',
-                  token: userProvider.token ?? '',
-                );
-              },
-              '/subscription_plans': (context) {
-                final userProvider = Provider.of<UserProvider>(
-                  context,
-                  listen: false,
-                );
-                return SubscriptionPlansScreen(
-                  userId: userProvider.userId ?? '',
-                  token: userProvider.token ?? '',
-                );
-              },
-              '/subscription_management': (context) {
-                final userProvider = Provider.of<UserProvider>(
-                  context,
-                  listen: false,
-                );
-                return SubscriptionManagementScreen(
-                  userId: userProvider.userId ?? '',
-                  token: userProvider.token ?? '',
-                );
-              },
-              '/receipt_details': (context) {
-                final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>;
-                return ReceiptDetailsScreen(
-                  receipt: args['receipt'] ?? {},
-                  imageUrl: args['imageUrl'] ?? '',
-                  userId: args['userId'] ?? '',
-                  imageId: args['imageId'] ?? '',
-                  isNewReceipt: args['isNewReceipt'] ?? false,
-                  isPdf: args['isPdf'] ?? false,
-                  isManualReceipt: args['isManualReceipt'] ?? false,
-                );
-              },
-              '/verify_otp': (context) {
-                final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>;
-                return VerifyOtpScreen(
-                  email: args['email'] ?? '',
-                );
-              },
-              '/split_receipts': (context) {
-                final userProvider = Provider.of<UserProvider>(context, listen: false);
-                return SplitReceiptsScreen(
-                  userId: userProvider.userId ?? '',
-                  token: userProvider.token ?? '',
-                );
-              },
-              '/edit_tags': (context) {
-                final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
-                final userProvider = Provider.of<UserProvider>(context, listen: false);
-                return EditTagsScreen(
-                  initialValues: (args?['initialValues'] as List<dynamic>?)?.cast<String>() ?? [],
-                  userId: userProvider.userId ?? '',
-                );
-              },
-              '/bill_reminders': (context) => const BillRemindersScreen(),
-              '/more': (context) {
-                final userProvider = Provider.of<UserProvider>(
-                  context,
-                  listen: false,
-                );
-                return MoreOptionsScreen(
-                  userId: userProvider.userId ?? '',
-                  token: userProvider.token ?? '',
-                );
-              },
-              '/mr_bucks': (context) => const MrBucksScreen(),
-              '/mr_bucks_admin': (context) => const MrBucksAdminScreen(),
-              // '/refer_earn': Handled via direct navigation in MoreOptionsScreen
-              '/no_internet': (context) => NoInternetScreen(onRetry: _retryConnection),
+                  };
+                  break;
+                case '/subscription_plans':
+                  builder = (context) {
+                    final userProvider = Provider.of<UserProvider>(
+                      context,
+                      listen: false,
+                    );
+                    return SubscriptionPlansScreen(
+                      userId: userProvider.userId ?? '',
+                      token: userProvider.token ?? '',
+                    );
+                  };
+                  break;
+                case '/subscription_management':
+                  builder = (context) {
+                    final userProvider = Provider.of<UserProvider>(
+                      context,
+                      listen: false,
+                    );
+                    return SubscriptionManagementScreen(
+                      userId: userProvider.userId ?? '',
+                      token: userProvider.token ?? '',
+                    );
+                  };
+                  break;
+                case '/receipt_details':
+                  builder = (context) {
+                    final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>;
+                    return ReceiptDetailsScreen(
+                      receipt: args['receipt'] ?? {},
+                      imageUrl: args['imageUrl'] ?? '',
+                      userId: args['userId'] ?? '',
+                      imageId: args['imageId'] ?? '',
+                      isNewReceipt: args['isNewReceipt'] ?? false,
+                      isPdf: args['isPdf'] ?? false,
+                      isManualReceipt: args['isManualReceipt'] ?? false,
+                    );
+                  };
+                  break;
+                case '/verify_otp':
+                  builder = (context) {
+                    final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>;
+                    return VerifyOtpScreen(
+                      emailOrPhone: args['emailOrPhone'] ?? args['email'] ?? '',
+                    );
+                  };
+                  break;
+                case '/split_receipts':
+                  builder = (context) {
+                    final userProvider = Provider.of<UserProvider>(context, listen: false);
+                    return SplitReceiptsScreen(
+                      userId: userProvider.userId ?? '',
+                      token: userProvider.token ?? '',
+                    );
+                  };
+                  break;
+                case '/edit_tags':
+                  builder = (context) {
+                    final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
+                    final userProvider = Provider.of<UserProvider>(context, listen: false);
+                    return EditTagsScreen(
+                      initialValues: (args?['initialValues'] as List<dynamic>?)?.cast<String>() ?? [],
+                      userId: userProvider.userId ?? '',
+                    );
+                  };
+                  break;
+                case '/bill_reminders':
+                  builder = (context) => const BillRemindersScreen();
+                  break;
+                case '/more':
+                  builder = (context) {
+                    final userProvider = Provider.of<UserProvider>(
+                      context,
+                      listen: false,
+                    );
+                    return MoreOptionsScreen(
+                      userId: userProvider.userId ?? '',
+                      token: userProvider.token ?? '',
+                    );
+                  };
+                  break;
+                case '/mr_bucks':
+                  builder = (context) {
+                    final featureFlagsProvider = Provider.of<FeatureFlagsProvider>(
+                      context,
+                      listen: false,
+                    );
+                    final userProvider = Provider.of<UserProvider>(context, listen: false);
+                    
+                    if (featureFlagsProvider.isMrBucksEnabled) {
+                      if (kIsWeb) {
+                        return WebMrBucksScreen(
+                          userId: userProvider.userId ?? '',
+                          token: userProvider.token ?? '',
+                        );
+                      } else {
+                        return const MrBucksScreen();
+                      }
+                    } else {
+                      // Feature is disabled, redirect to dashboard
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        Navigator.of(context).pushReplacementNamed('/dashboard');
+                      });
+                      return const Scaffold(
+                        body: Center(
+                          child: CircularProgressIndicator(),
+                        ),
+                      );
+                    }
+                  };
+                  break;
+                case '/mr_bucks_admin':
+                  builder = (context) => const MrBucksAdminScreen();
+                  break;
+                case '/workspace':
+                  builder = (context) {
+                    final userProvider = Provider.of<UserProvider>(context, listen: false);
+                    return WorkspaceOnboardingScreen(
+                      userId: userProvider.userId ?? '',
+                      token: userProvider.token ?? '',
+                    );
+                  };
+                  break;
+                case '/workspace_dashboard':
+                  builder = (context) {
+                    final userProvider = Provider.of<UserProvider>(context, listen: false);
+                    return WorkspaceDashboardScreen(
+                      userId: userProvider.userId ?? '',
+                      token: userProvider.token ?? '',
+                    );
+                  };
+                  break;
+                case '/workspaces':
+                  builder = (context) {
+                    final userProvider = Provider.of<UserProvider>(context, listen: false);
+                    return WorkspacesListScreen(
+                      userId: userProvider.userId ?? '',
+                      token: userProvider.token ?? '',
+                    );
+                  };
+                  break;
+                case '/manage_team_members':
+                  builder = (context) {
+                    final userProvider = Provider.of<UserProvider>(context, listen: false);
+                    return ManageTeamMembersScreen(
+                      userId: userProvider.userId ?? '',
+                      token: userProvider.token ?? '',
+                    );
+                  };
+                  break;
+                case '/pending_approvals':
+                  builder = (context) {
+                    final userProvider = Provider.of<UserProvider>(context, listen: false);
+                    return PendingApprovalsScreen(
+                      userId: userProvider.userId ?? '',
+                      token: userProvider.token ?? '',
+                    );
+                  };
+                  break;
+                case '/workspace_analytics':
+                  builder = (context) {
+                    final userProvider = Provider.of<UserProvider>(context, listen: false);
+                    return WorkspaceAnalyticsScreen(
+                      userId: userProvider.userId ?? '',
+                      token: userProvider.token ?? '',
+                      workspaceId: null, // Optional; pass when available from navigation
+                    );
+                  };
+                  break;
+                case '/tax_calculator':
+                  // Route guard: Hide Tax Calculator for Indian users
+                  final userProvider = Provider.of<UserProvider>(context, listen: false);
+                  final userCountry = userProvider.country;
+                  if (CountryUtils.isIndia(userCountry)) {
+                    // Redirect to dashboard if user is from India
+                    builder = (context) => DashboardScreen(
+                      userId: userProvider.userId ?? '',
+                      token: userProvider.token ?? '',
+                    );
+                  } else {
+                    builder = (context) => const TaxCalculatorScreen();
+                  }
+                  break;
+                case '/no_internet':
+                  builder = (context) => NoInternetScreen(onRetry: _retryConnection);
+                  break;
+                default:
+                  builder = (context) => Scaffold(
+                    body: Center(
+                      child: Text('Route not found: ${settings.name}'),
+                    ),
+                  );
+              }
+              
+              // Return PageRouteBuilder with zero duration for instant transition
+              return PageRouteBuilder(
+                settings: settings,
+                pageBuilder: (context, animation, secondaryAnimation) => builder(context),
+                transitionDuration: Duration.zero,
+                reverseTransitionDuration: Duration.zero,
+              );
             },
             builder: (context, child) {
               // Set context for ApiService

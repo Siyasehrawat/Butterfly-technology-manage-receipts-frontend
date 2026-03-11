@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -49,6 +50,9 @@ class _ExpenseReportReceiptSelectionScreenState extends State<ExpenseReportRecei
   bool _hasNextPage = false;
   bool _isLoadingMore = false;
 
+  // Debounce timer for search
+  Timer? _searchDebounce;
+
   @override
   void initState() {
     super.initState();
@@ -70,6 +74,8 @@ class _ExpenseReportReceiptSelectionScreenState extends State<ExpenseReportRecei
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
+    _searchController.dispose();
     SystemChrome.setSystemUIOverlayStyle(
       const SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
@@ -77,7 +83,6 @@ class _ExpenseReportReceiptSelectionScreenState extends State<ExpenseReportRecei
         statusBarBrightness: Brightness.light,
       ),
     );
-    _searchController.dispose();
     super.dispose();
   }
 
@@ -99,8 +104,17 @@ class _ExpenseReportReceiptSelectionScreenState extends State<ExpenseReportRecei
     }
 
     try {
+      // Build query parameters including search
+      String endpoint = '/receipts/${widget.userId}?page=$_currentPage&pageSize=$_pageSize';
+      
+      // Add search query as merchant parameter for backend search
+      // Note: Backend uses 'merchant' parameter for search
+      if (_searchController.text.trim().isNotEmpty) {
+        endpoint += '&merchant=${Uri.encodeComponent(_searchController.text.trim())}';
+      }
+      
       final response = await ApiService.get(
-        '/receipts/${widget.userId}?page=$_currentPage&pageSize=$_pageSize', // Add pagination params
+        endpoint,
         token: widget.token,
       );
 
@@ -192,21 +206,19 @@ class _ExpenseReportReceiptSelectionScreenState extends State<ExpenseReportRecei
     }
   }
 
-  List<Map<String, dynamic>> get _filteredReceipts {
-    final searchQuery = _searchController.text.toLowerCase();
-    if (searchQuery.isEmpty) {
-      return _receipts;
-    }
+  // Search is now handled by backend, so filtered receipts is just the receipts list
+  List<Map<String, dynamic>> get _filteredReceipts => _receipts;
 
-    return _receipts.where((receipt) {
-      final merchant = (receipt['merchant'] ?? '').toLowerCase();
-      final category = (receipt['category'] ?? '').toLowerCase();
-      final amount = (receipt['amount'] ?? '').toString().toLowerCase();
-
-      return merchant.contains(searchQuery) ||
-          category.contains(searchQuery) ||
-          amount.contains(searchQuery);
-    }).toList();
+  // Handle search query changes with debouncing
+  void _onSearchChanged(String value) {
+    // Cancel previous timer
+    _searchDebounce?.cancel();
+    
+    // Create new timer
+    _searchDebounce = Timer(const Duration(milliseconds: 500), () {
+      // Reset pagination and fetch from backend when search changes
+      _fetchReceipts(reset: true);
+    });
   }
 
   void _toggleReceiptSelection(String receiptId) {
@@ -724,12 +736,12 @@ class _ExpenseReportReceiptSelectionScreenState extends State<ExpenseReportRecei
                             child: TextField(
                               controller: _searchController,
                               decoration: const InputDecoration(
-                                hintText: 'Search receipts...',
+                                hintText: 'Search by merchant name...',
                                 border: InputBorder.none,
                                 contentPadding: EdgeInsets.symmetric(
                                     horizontal: 12, vertical: 14),
                               ),
-                              onChanged: (value) => setState(() {}),
+                              onChanged: _onSearchChanged,
                             ),
                           ),
                         ],
@@ -901,10 +913,10 @@ class _ExpenseReportReceiptSelectionScreenState extends State<ExpenseReportRecei
 
                                     // Receipt details
                                     Expanded(
-                                      flex: 2,
                                       child: Column(
                                         crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
+                                          // Merchant name - wrap if too long
                                           Text(
                                             merchant,
                                             style: const TextStyle(
@@ -912,41 +924,41 @@ class _ExpenseReportReceiptSelectionScreenState extends State<ExpenseReportRecei
                                               fontSize: 16,
                                               color: Colors.black87,
                                             ),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
+                                            maxLines: null,
+                                            overflow: TextOverflow.visible,
+                                            softWrap: true,
                                           ),
                                           const SizedBox(height: 4),
-                                          Text(
-                                            category,
-                                            style: const TextStyle(
-                                              fontSize: 14,
-                                              color: Color(0xFF7E5EFD),
-                                              fontWeight: FontWeight.w500,
-                                            ),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-
-                                    // Amount and date
-                                    Expanded(
-                                      flex: 1,
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.end,
-                                        children: [
-                                          Text(
-                                            '$currencySymbol$amount',
-                                            style: const TextStyle(
-                                              fontSize: 16,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.black87,
-                                            ),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
+                                          // Category and Amount on same line
+                                          Row(
+                                            children: [
+                                              Expanded(
+                                                child: Text(
+                                                  category,
+                                                  style: const TextStyle(
+                                                    fontSize: 14,
+                                                    color: Color(0xFF7E5EFD),
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Text(
+                                                '$currencySymbol$amount',
+                                                style: const TextStyle(
+                                                  fontSize: 14,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.black87,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ],
                                           ),
                                           const SizedBox(height: 4),
+                                          // Date
                                           Text(
                                             formattedDate,
                                             style: TextStyle(
