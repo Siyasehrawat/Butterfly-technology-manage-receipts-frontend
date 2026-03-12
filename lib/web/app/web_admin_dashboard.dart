@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service_bypass.dart';
 import '../../screens/admin_analytics_screen.dart';
+import '../../screens/admin_detailed_analytics_screen.dart';
 import '../../screens/admin_users_screen.dart';
 import '../../screens/mr_bucks_admin_screen.dart';
 import '../../screens/workspaces_list_screen.dart';
@@ -174,6 +175,23 @@ class _WebAdminDashboardState extends State<WebAdminDashboard> {
                         ),
                       );
                     }),
+                    _buildNavItem(
+                      context,
+                      Icons.analytics_outlined,
+                      'Detailed Analysis',
+                      false,
+                      () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => AdminDetailedAnalyticsScreen(
+                              adminId: widget.adminId,
+                              token: widget.token,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
                     _buildNavItem(context, Icons.card_giftcard, 'MR Bucks Admin', false, () {
                       Navigator.pushNamed(context, '/mr_bucks_admin');
                     }),

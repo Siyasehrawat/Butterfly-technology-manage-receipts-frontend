@@ -5,6 +5,7 @@ import '../widgets/curved_background.dart';
 import '../providers/user_provider.dart';
 import '../services/api_service_bypass.dart';
 import 'admin_analytics_screen.dart';
+import 'admin_detailed_analytics_screen.dart';
 import 'admin_users_screen.dart';
 import 'dashboard_screen.dart';
 import 'workspace_intro_screen.dart';
@@ -85,6 +86,18 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => AdminAnalyticsScreen(
+          adminId: widget.adminId,
+          token: widget.token,
+        ),
+      ),
+    );
+  }
+
+  void _navigateToDetailedAnalyticsScreen() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AdminDetailedAnalyticsScreen(
           adminId: widget.adminId,
           token: widget.token,
         ),
@@ -543,6 +556,14 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             onTap: () {
               Navigator.pop(context);
               _navigateToAnalyticsScreen();
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.analytics_outlined),
+            title: const Text('Detailed Analysis'),
+            onTap: () {
+              Navigator.pop(context);
+              _navigateToDetailedAnalyticsScreen();
             },
           ),
           ListTile(

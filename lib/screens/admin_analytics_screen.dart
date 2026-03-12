@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../services/api_service_bypass.dart';
+import '../services/version_service.dart';
 
 class AdminAnalyticsScreen extends StatefulWidget {
   final String adminId;
@@ -23,10 +24,17 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
   Map<String, dynamic> _analyticsData = {};
   String? _errorMessage;
 
+  // Receipt activity summary (today, yesterday, week, etc.)
+  bool _isReceiptCountsLoading = false;
+  String? _receiptCountsError;
+  // Each item: { 'label': 'Today', 'count': 24 }
+  List<Map<String, dynamic>> _receiptUploadCounts = [];
+
   @override
   void initState() {
     super.initState();
     _fetchAnalyticsData();
+    _fetchReceiptUploadCounts();
   }
 
   Future<void> _fetchAnalyticsData() async {
@@ -57,6 +65,106 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
       setState(() {
         _errorMessage = 'Network error: Unable to connect to server';
         _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _fetchReceiptUploadCounts() async {
+    setState(() {
+      _isReceiptCountsLoading = true;
+      _receiptCountsError = null;
+    });
+
+    try {
+      if (!VersionService.isInitialized) {
+        await VersionService.initialize();
+      }
+
+      final envBase = dotenv.env['API_BASE_URL'];
+      final baseUrl = (envBase != null && envBase.isNotEmpty)
+          ? envBase
+          : VersionService.baseUrl.replaceFirst('/api', '');
+
+      // Filters we want to show together
+      final filterLabels = <String, String>{
+        'today': 'Today',
+        'yesterday': 'Yesterday',
+        'week': 'Week',
+        'month': 'Month',
+        '6months': '6 Months',
+      };
+
+      final headers = await ApiService.getHeaders(token: widget.token);
+      final List<Map<String, dynamic>> results = [];
+
+      for (final entry in filterLabels.entries) {
+        final queryParams = {
+          'platform': VersionService.platform ?? 'unknown',
+          'currentVersion': VersionService.currentVersion ?? '1.0.0',
+          'userId': widget.adminId,
+          'filter': entry.key,
+        };
+
+        final url = Uri.parse('$baseUrl/api/admin/receipt-upload-counts')
+            .replace(queryParameters: queryParams);
+
+        final response = await http.get(url, headers: headers);
+
+        if (response.statusCode == 200) {
+          final decoded = json.decode(response.body);
+          int count = 0;
+
+          if (decoded is Map<String, dynamic>) {
+            final map = decoded;
+            final fromRoot = map['count'] ?? map['total'] ?? map['receipts'];
+            if (fromRoot != null) {
+              count = int.tryParse(fromRoot.toString()) ?? 0;
+            } else if (map['data'] is Map) {
+              final data = map['data'] as Map;
+              final fromData =
+                  data['count'] ?? data['total'] ?? data['receipts'] ?? data['value'];
+              if (fromData != null) {
+                count = int.tryParse(fromData.toString()) ?? 0;
+              }
+            }
+          } else if (decoded is List) {
+            // If backend returns list of points, sum their counts
+            int sum = 0;
+            for (final item in decoded) {
+              if (item is Map) {
+                final v =
+                    item['count'] ?? item['receipts'] ?? item['value'] ?? item['total'];
+                if (v != null) {
+                  sum += int.tryParse(v.toString()) ?? 0;
+                }
+              }
+            }
+            count = sum;
+          }
+
+          results.add({
+            'label': entry.value,
+            'count': count,
+          });
+        } else {
+          setState(() {
+            _receiptCountsError =
+                'Failed to load receipt activity: ${response.statusCode}';
+            _isReceiptCountsLoading = false;
+          });
+          return;
+        }
+      }
+
+      setState(() {
+        _receiptUploadCounts = results;
+        _isReceiptCountsLoading = false;
+      });
+    } catch (e) {
+      debugPrint('Error fetching receipt upload counts: $e');
+      setState(() {
+        _receiptCountsError = 'Network error: Unable to load receipt activity';
+        _isReceiptCountsLoading = false;
       });
     }
   }
@@ -106,7 +214,12 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
         ),
       )
           : RefreshIndicator(
-        onRefresh: _fetchAnalyticsData,
+        onRefresh: () async {
+          await Future.wait([
+            _fetchAnalyticsData(),
+            _fetchReceiptUploadCounts(),
+          ]);
+        },
         color: const Color(0xFF7E5EFD),
         child: SingleChildScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
@@ -189,20 +302,37 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
   }
 
   Widget _buildTimeSeriesSection() {
-    final timeSeriesData = _analyticsData['timeSeriesData'] as List<dynamic>? ?? [];
-
     return _buildAnalyticsCard(
       'Receipt Activity Over Time',
       Column(
         children: [
-          if (timeSeriesData.isEmpty)
+          if (_isReceiptCountsLoading)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(16.0),
+                child: CircularProgressIndicator(
+                  color: Color(0xFF7E5EFD),
+                ),
+              ),
+            )
+          else if (_receiptCountsError != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8.0),
+              child: Text(
+                _receiptCountsError!,
+                style: const TextStyle(color: Colors.red),
+              ),
+            )
+          else if (_receiptUploadCounts.isEmpty)
             const Center(
               child: Text('No time series data available'),
             )
           else
-            ...timeSeriesData.map<Widget>((dataPoint) {
-              final date = dataPoint['date']?.toString() ?? 'Unknown Date';
-              final value = dataPoint['value']?.toString() ?? '0';
+            ..._receiptUploadCounts.map<Widget>((dataPoint) {
+              final label = dataPoint['label']?.toString() ?? '';
+              final count = dataPoint['count'] is int
+                  ? dataPoint['count'] as int
+                  : int.tryParse('${dataPoint['count'] ?? 0}') ?? 0;
 
               return Padding(
                 padding: const EdgeInsets.only(bottom: 12),
@@ -211,7 +341,7 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
                     Expanded(
                       flex: 2,
                       child: Text(
-                        date,
+                        label,
                         style: const TextStyle(fontWeight: FontWeight.w500),
                       ),
                     ),
@@ -224,7 +354,7 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Text(
-                          '$value receipts',
+                          '$count receipts',
                           style: const TextStyle(
                             color: Color(0xFF7E5EFD),
                             fontWeight: FontWeight.bold,
